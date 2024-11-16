@@ -6,6 +6,7 @@ require_once $CFG->dirroot.'/grade/report/ppreport/lib.php';
 
 $courseid = optional_param('id', SITEID, PARAM_INT);
 $userid   = optional_param('userid', $USER->id, PARAM_INT);
+$quizid   = optional_param('quizid', null, PARAM_INT);
 
 $PAGE->set_url(new moodle_url('/grade/report/ppreport/index.php', array('id' => $courseid, 'userid' => $userid)));
 
@@ -34,10 +35,49 @@ if (empty($userid)) {
     $personalcontext = context_user::instance($userid);
 }
 
+if (isset($personalcontext) && $courseid == SITEID) {
+    $PAGE->set_context($personalcontext);
+} else {
+    $PAGE->set_context($context);
+}
+if ($userid == $USER->id) {
+    $settings = $PAGE->settingsnav->find('mygrades', null);
+    $settings->make_active();
+} else if ($courseid != SITEID && $userid) {
+    // Show some other navbar thing.
+    $user = $DB->get_record('user', array('id' => $userid), '*', MUST_EXIST);
+    $PAGE->navigation->extend_for_user($user);
+}
 
+$access = true;//TODO: grade_report_overview::check_access($systemcontext, $context, $personalcontext, $course, $userid);
 
-echo $OUTPUT->header();
+if (!$access) {
+    // no access to grades!
+    throw new \moodle_exception('nopermissiontoviewgrades', 'error',  $CFG->wwwroot.'/course/view.php?id='.$courseid);
+}
 
-echo "asd";
+$gpr = new grade_plugin_return(array('type'=>'report', 'plugin'=>'overview', 'courseid'=>$course->id, 'userid'=>$userid));
+
+/// last selected report session tracking
+if (!isset($USER->grade_last_report)) {
+    $USER->grade_last_report = array();
+}
+$USER->grade_last_report[$course->id] = 'ppreport';
+
+$actionbar = new \core_grades\output\general_action_bar($context,
+    new moodle_url('/grade/report/ppreport/index.php', ['id' => $courseid]), 'report', 'ppreport');
+
+print_grade_page_head($courseid, 'report', 'ppreport', false, false, false,
+    true, null, null, null, $actionbar);
+
+$report = new grade_report_ppreport($userid, $gpr, $context);
+
+if ($quizid) {
+    $report->fill_table($quizid);
+    $report->print_table();
+}
+else {
+    echo $report->print_quiz_list();
+}
 
 echo $OUTPUT->footer();
