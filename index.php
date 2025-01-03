@@ -3,6 +3,7 @@ require_once '../../../config.php';
 require_once $CFG->libdir.'/gradelib.php';
 require_once $CFG->dirroot.'/grade/lib.php';
 require_once $CFG->dirroot.'/grade/report/ppreport/lib.php';
+require_once $CFG->dirroot.'/grade/report/ppreport/classes/output/action_bar.php';
 
 $courseid = optional_param('id', SITEID, PARAM_INT);
 $userid   = optional_param('userid', $USER->id, PARAM_INT);
@@ -64,17 +65,18 @@ if (!isset($USER->grade_last_report)) {
 }
 $USER->grade_last_report[$course->id] = 'ppreport';
 
-$actionbar = new \core_grades\output\general_action_bar($context,
-    new moodle_url('/grade/report/ppreport/index.php', ['id' => $courseid]), 'report', 'ppreport');
+// $actionbar = new \core_grades\output\general_action_bar($context,
+//     new moodle_url('/grade/report/ppreport/index.php', ['id' => $courseid]), 'report', 'ppreport');
 
+$actionbar = new \ppreport\output\action_bar($context, 1);
 print_grade_page_head($courseid, 'report', 'ppreport', false, false, false,
     true, null, null, null, $actionbar);
 
 $report = new grade_report_ppreport($userid, $gpr, $context);
 
 if ($quizid) {
-    $report->fill_table($quizid);
-    $report->print_table();
+    $report->print_table($quizid);
+    $report->print_avg_data($quizid);
 }
 else {
     echo $report->print_quiz_list();

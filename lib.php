@@ -252,12 +252,22 @@ class grade_report_ppreport extends grade_report {
         }
     }
 
+    public function print_avg_data($quizid) {
+        global $DB;
+        $sql = "SELECT avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
+        WHERE state = 'finished' AND quiz = ?";
+
+        $r = $DB->get_records_sql($sql, array($quizid));
+        echo "<div><b>Среднее значение: ". array_values($r)[0]->avg_diff . "</b></div>";   
+    }
+
     /**
      * Prints or returns the HTML from the flexitable.
      * @param bool $return Whether or not to return the data instead of printing it directly.
      * @return string
      */
-    public function print_table($return=false) {
+    public function print_table($quizid, $return=false) {
+        $this->fill_table($quizid);
         ob_start();
         $this->table->print_html();
         $html = ob_get_clean();
