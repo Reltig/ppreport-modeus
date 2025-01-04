@@ -200,9 +200,6 @@ class grade_report_ppreport extends grade_report {
     public function setup_courses_data($quizid, $studentcoursesonly) {
         global $USER, $DB;
 
-        $coursesdata = array();
-        $numusers = $this->get_numusers(false);
-
         $sql = "SELECT timestart, timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_attempts} qa
                 LEFT JOIN {user} u ON qa.userid = u.id
                 WHERE state = 'finished' AND quiz = ?";
@@ -219,37 +216,21 @@ class grade_report_ppreport extends grade_report {
     public function fill_table($quizid, $activitylink = false, $studentcoursesonly = false) {
         global $CFG, $DB, $OUTPUT, $USER;
 
-        if ($studentcoursesonly && count($this->studentcourseids) == 0) {
-            return false;
+        $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
+
+        foreach ($quiz_times as $quiz_time) {
+            $date_format = 'Y-m-d\TH:i:s\Z';
+            $data = [
+                $quiz_time->firstname . ' ' . $quiz_time->lastname, 
+                gmdate($date_format, $quiz_time->timestart), 
+                gmdate($date_format, $quiz_time->timefinish),
+                format_period($quiz_time->timefinish - $quiz_time->timestart)
+            ];
+            
+            $this->table->add_data($data);
         }
 
-        // Only show user's courses instead of all courses.
-        if ($this->courses) {
-            $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
-
-            // Check whether current user can view all grades of this user - parent most probably.
-            $viewasuser = $this->course->showgrades && has_any_capability([
-                'moodle/grade:viewall',
-                'moodle/user:viewuseractivitiesreport',
-            ], context_user::instance($this->user->id));
-
-            foreach ($quiz_times as $quiz_time) {
-                $date_format = 'Y-m-d\TH:i:s\Z';
-                $data = [
-                    $quiz_time->firstname . ' ' . $quiz_time->lastname, 
-                    gmdate($date_format, $quiz_time->timestart), 
-                    gmdate($date_format, $quiz_time->timefinish),
-                    format_period($quiz_time->timefinish - $quiz_time->timestart)
-                ];
-                
-                $this->table->add_data($data);
-            }
-
-            return true;
-        } else {
-            echo $OUTPUT->notification(get_string('notenrolled', 'grades'), 'notifymessage');
-            return false;
-        }
+        return true;
     }
 
     public function print_avg_data($quizid) {
@@ -309,6 +290,50 @@ class grade_report_ppreport extends grade_report {
      */
     public static function supports_mygrades() {
         return true;
+    }
+
+    public function print_user_page($userid) {
+        global $DB, $OUTPUT, $COURSE;
+        $sql = "SELECT firstname, lastname, email FROM {user} u WHERE id = ?";
+        $result = $DB->get_record_sql($sql, array($userid));
+
+        $sql = "SELECT q.id, qg.grade, q.name FROM {quiz_grades} qg
+                LEFT JOIN {quiz} q ON qg.quiz = q.id AND q.course = ?
+                WHERE qg.userid = ?
+                ORDER BY q.timecreated ASC";
+        $userQuizData = $DB->get_records_sql($sql, array($COURSE->id, $userid));
+
+        $sql = "SELECT q.id, q.name FROM {quiz} q
+                WHERE q.course = ?
+                ORDER BY q.timecreated ASC";
+        $allQuizData = $DB->get_records_sql($sql, array($COURSE->id,));
+        
+        $userQuizIds = array_map(fn ($a) => $a->id, array_values($userQuizData));
+        $quizLabels = array_map(fn ($a) => $a->name, array_values($allQuizData));
+        $userGrades = [];
+        foreach ($allQuizData as $quizData) {
+            if (!in_array($quizData->id, $userQuizIds)){
+                $userGrades[]=0;
+                continue;
+            }
+            $userGrades[] = $this->array_search_func($userQuizData, fn ($d) => $d->id == $quizData->id)->grade;
+        }
+        // echo json_encode($userGrades, JSON_PRETTY_PRINT);
+        $chart = new \core\chart_line();
+        $chart->add_series(new core\chart_series('User quiz grades', array_merge($userGrades)));
+        $chart->set_labels($quizLabels);
+        $result->chart = $OUTPUT->render($chart);
+
+        echo $OUTPUT->render_from_template("gradereport_ppreport/user", $result);
+    }
+
+    private function array_search_func(array $arr, $func)
+    {
+        foreach ($arr as $key => $v)
+            if ($func($v))
+                return $v;
+
+        return false;
     }
 
     /**

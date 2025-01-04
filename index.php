@@ -6,7 +6,7 @@ require_once $CFG->dirroot.'/grade/report/ppreport/lib.php';
 require_once $CFG->dirroot.'/grade/report/ppreport/classes/output/action_bar.php';
 
 $courseid = optional_param('id', SITEID, PARAM_INT);
-$userid   = optional_param('userid', $USER->id, PARAM_INT);
+$userid   = optional_param('userid', null, PARAM_INT);
 $quizid   = optional_param('quizid', null, PARAM_INT);
 
 $PAGE->set_url(new moodle_url('/grade/report/ppreport/index.php', array('id' => $courseid, 'userid' => $userid)));
@@ -78,8 +78,10 @@ if ($quizid) {
     $report->print_table($quizid);
     $report->print_avg_data($quizid);
 }
+else if ($userid){
+    $report->print_user_page($userid);
+}
 else {
     echo $report->print_quiz_list();
 }
-
 echo $OUTPUT->footer();
