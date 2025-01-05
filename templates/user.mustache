@@ -1,14 +1,21 @@
-<div>
-    <div class="user-header">
-        <h1>
-            {{firstname}} {{lastname}} ({{email}})
-        </h1>
+<div class="main-header">
+    <div class="header-container">
+        <div class="user-header">
+            <h1>
+                {{firstname}} {{lastname}} ({{email}})
+            </h1>
+            <div class="main-user-data">
+                <p>Количество выполненных заданий: {{solvedQuizCount}}</p>
+                <p>Средний балл за задания: {{gradeAvg}}</p>
+                <p>Общий балл за задания: {{sumQuizGrade}}</p>
+            </div>
+        </div>
+        <div class="side-charts">
+            {{{userQuizGradeChart}}}
+            {{{solveTimeChart}}}
+        </div>
     </div>
-    <div class="main-user-data">
-        <p>Количество выполненных заданий: {{}}</p>
-        <p>Средний балл за задание: {{}}</p>
-        <p>Общий балл за задание: {{}}</p>
-    </div>
-    {{{userQuizGradeChart}}}
-    {{{solveTimeChart}}}
+    <table class="flexible table table-striped table-hover boxaligncenter generaltable">
+
+    </table>
 </div>

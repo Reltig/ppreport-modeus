@@ -1,4 +1,19 @@
+.main-header {
+    
+}
+
+.user-header {
+    width: 50%;
+}
+
 .main-user-data > p {
     margin: 0;
 }
 
+.side-charts {
+    
+}
+
+.header-container {
+    display: flex;
+}

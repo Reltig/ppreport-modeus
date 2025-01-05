@@ -297,11 +297,30 @@ class grade_report_ppreport extends grade_report {
         $sql = "SELECT firstname, lastname, email FROM {user} u WHERE id = ?";
         $result = $DB->get_record_sql($sql, array($userid));
 
-        
+        $this->create_user_general_data($result, $userid);
         $result->userQuizGradeChart = $this->create_user_quiz_grades_chart($userid);
         $result->solveTimeChart = $this->create_solve_time_chart($userid);
+        $result->userQuizGradeTable = $this->create_user_quiz_grades_table($userid);
 
         echo $OUTPUT->render_from_template("gradereport_ppreport/user", $result);
+    }
+
+    private function create_user_general_data(&$result, $userid) {
+        global $DB, $COURSE, $OUTPUT;
+
+        $sql = "SELECT q.id, qg.grade, q.name FROM {quiz_grades} qg
+                LEFT JOIN {quiz} q ON qg.quiz = q.id AND q.course = ?
+                WHERE qg.userid = ?
+                ORDER BY q.timecreated ASC";
+        $data = $DB->get_records_sql($sql, array($COURSE->id, $userid));
+        $userGrades = array_map(fn ($x) => $x->grade, $data);
+        $solvedQuizCount = count($userGrades);
+        $sumQuizGrade = array_sum($userGrades);
+        $gradeAvg = $sumQuizGrade / $solvedQuizCount;
+
+        $result->solvedQuizCount = $solvedQuizCount;
+        $result->sumQuizGrade = $sumQuizGrade;
+        $result->gradeAvg = $gradeAvg;
     }
 
     private function create_user_quiz_grades_chart($userid) {
@@ -340,7 +359,7 @@ class grade_report_ppreport extends grade_report {
     private function create_solve_time_chart($userid) {
         global $DB, $COURSE, $OUTPUT;
 
-        $sql = "SELECT q.id, qa.quiz, qa.timefinish - qa.timestart as timediff FROM {quiz_attempts} qa
+        $sql = "SELECT q.id, q.name, qg.grade, qa.quiz, qa.timefinish - qa.timestart as timediff, avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
                 INNER JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
                 INNER JOIN {quiz} q ON q.id = qa.quiz
                 WHERE q.course = ? AND qg.userid = ? 
@@ -356,19 +375,76 @@ class grade_report_ppreport extends grade_report {
         $userQuizIds = array_map(fn ($a) => $a->id, array_values($userQuizTimeData));
 
         $userTimes = [];
+        $userTimesAvg = [];
         foreach ($allQuizData as $quizData) {
             if (!in_array($quizData->id, $userQuizIds)){
                 $userTimes[]=0;
+                $userTimesAvg[]=0;
                 continue;
             }
             $userTimes[] = $this->array_search_func($userQuizTimeData, fn ($d) => $d->id == $quizData->id)->timediff;
+            $userTimesAvg[] = $this->array_search_func($userQuizTimeData, fn ($d) => $d->id == $quizData->id)->avg_diff;
         }
 
         $chart = new \core\chart_line();
         $chart->add_series(new core\chart_series('User quiz solve time', array_merge($userTimes)));
+        $chart->add_series(new core\chart_series('Quiz avg solve time', array_merge($userTimesAvg)));
         $chart->set_labels($quizLabels);
 
         return $OUTPUT->render($chart);
+    }
+
+    private function create_user_quiz_grades_table($userid) {
+        $userQuizTable = new flexible_table('grade-report-ppreport-'.$this->user->id);
+
+        $tableheaders = array(
+            get_string('quizname'),
+            get_string('timestart'),
+            get_string('timefinish'),
+            get_string('timediff'),
+            get_string('grade'),
+        );
+
+        $tablecolumns = array('quizname', 'timestart', 'timefinish', 'timediff', 'grade');
+
+        $userQuizTable->define_columns($tablecolumns);
+        $userQuizTable->define_headers($tableheaders);
+        $userQuizTable->define_baseurl($this->baseurl);
+
+        $userQuizTable->set_attribute('cellspacing', '0');
+        $userQuizTable->set_attribute('id', 'ppreport-user-quiz-grades');
+        $userQuizTable->set_attribute('class', 'boxaligncenter generaltable');
+
+        $userQuizTable->setup();
+
+        $this->fill_user_quiz_grades_table($userQuizTable, $userid);
+        ob_start();
+        $userQuizTable->print_html();
+        return ob_get_clean();
+    }
+
+    private function fill_user_quiz_grades_table(&$table, $userid) {
+        global $DB, $COURSE, $OUTPUT;
+        //TODO: extract to func
+        $sql = "SELECT q.id, q.name, qg.grade, qa.quiz, qa.timefinish - qa.timestart as timediff, avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
+                INNER JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
+                INNER JOIN {quiz} q ON q.id = qa.quiz
+                WHERE q.course = ? AND qg.userid = ? 
+                ORDER BY q.timecreated ASC";
+        $userQuizTimeData = array_values($DB->get_records_sql($sql, array($COURSE->id, $userid)));
+
+        foreach ($userQuizTimeData as $userQuizTime) {
+            $date_format = 'Y-m-d\TH:i:s\Z';
+            $data = [
+                $userQuizTime->name,
+                gmdate($date_format, $userQuizTime->timestart), 
+                gmdate($date_format, $userQuizTime->timefinish),
+                format_period($userQuizTime->timediff),
+                $userQuizTime->grade
+            ];
+            
+            $table->add_data($data);
+        }
     }
 
     private function array_search_func(array $arr, $func)
