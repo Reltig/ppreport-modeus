@@ -297,12 +297,23 @@ class grade_report_ppreport extends grade_report {
         $sql = "SELECT firstname, lastname, email FROM {user} u WHERE id = ?";
         $result = $DB->get_record_sql($sql, array($userid));
 
+        
+        $result->userQuizGradeChart = $this->create_user_quiz_grades_chart($userid);
+        $result->solveTimeChart = $this->create_solve_time_chart($userid);
+
+        echo $OUTPUT->render_from_template("gradereport_ppreport/user", $result);
+    }
+
+    private function create_user_quiz_grades_chart($userid) {
+        global $DB, $COURSE, $OUTPUT;
+
         $sql = "SELECT q.id, qg.grade, q.name FROM {quiz_grades} qg
                 LEFT JOIN {quiz} q ON qg.quiz = q.id AND q.course = ?
                 WHERE qg.userid = ?
                 ORDER BY q.timecreated ASC";
         $userQuizData = $DB->get_records_sql($sql, array($COURSE->id, $userid));
 
+        //TODO: extract to function
         $sql = "SELECT q.id, q.name FROM {quiz} q
                 WHERE q.course = ?
                 ORDER BY q.timecreated ASC";
@@ -322,9 +333,42 @@ class grade_report_ppreport extends grade_report {
         $chart = new \core\chart_line();
         $chart->add_series(new core\chart_series('User quiz grades', array_merge($userGrades)));
         $chart->set_labels($quizLabels);
-        $result->chart = $OUTPUT->render($chart);
 
-        echo $OUTPUT->render_from_template("gradereport_ppreport/user", $result);
+        return $OUTPUT->render($chart);
+    }
+
+    private function create_solve_time_chart($userid) {
+        global $DB, $COURSE, $OUTPUT;
+
+        $sql = "SELECT q.id, qa.quiz, qa.timefinish - qa.timestart as timediff FROM {quiz_attempts} qa
+                INNER JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
+                INNER JOIN {quiz} q ON q.id = qa.quiz
+                WHERE q.course = ? AND qg.userid = ? 
+                ORDER BY q.timecreated ASC";
+        $userQuizTimeData = $DB->get_records_sql($sql, array($COURSE->id, $userid));
+
+        //TODO: extract to function
+        $sql = "SELECT q.id, q.name FROM {quiz} q
+                WHERE q.course = ?
+                ORDER BY q.timecreated ASC";
+        $allQuizData = $DB->get_records_sql($sql, array($COURSE->id,));
+        $quizLabels = array_map(fn ($a) => $a->name, array_values($allQuizData));
+        $userQuizIds = array_map(fn ($a) => $a->id, array_values($userQuizTimeData));
+
+        $userTimes = [];
+        foreach ($allQuizData as $quizData) {
+            if (!in_array($quizData->id, $userQuizIds)){
+                $userTimes[]=0;
+                continue;
+            }
+            $userTimes[] = $this->array_search_func($userQuizTimeData, fn ($d) => $d->id == $quizData->id)->timediff;
+        }
+
+        $chart = new \core\chart_line();
+        $chart->add_series(new core\chart_series('User quiz solve time', array_merge($userTimes)));
+        $chart->set_labels($quizLabels);
+
+        return $OUTPUT->render($chart);
     }
 
     private function array_search_func(array $arr, $func)
