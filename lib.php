@@ -202,7 +202,8 @@ class grade_report_ppreport extends grade_report {
 
         $sql = "SELECT timestart, timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_attempts} qa
                 LEFT JOIN {user} u ON qa.userid = u.id
-                WHERE state = 'finished' AND quiz = ?";
+                WHERE state = 'finished' AND quiz = ?
+                ORDER BY timefinish - timestart";
 
         return $DB->get_records_sql($sql, array($quizid));
     }
@@ -214,14 +215,17 @@ class grade_report_ppreport extends grade_report {
      * @param bool $studentcoursesonly Only show courses that the user is a student of.
      */
     public function fill_table($quizid, $activitylink = false, $studentcoursesonly = false) {
-        global $CFG, $DB, $OUTPUT, $USER;
+        global $CFG, $DB, $OUTPUT, $USER, $COURSE;
 
         $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
 
         foreach ($quiz_times as $quiz_time) {
             $date_format = 'Y-m-d\TH:i:s\Z';
             $data = [
-                $quiz_time->firstname . ' ' . $quiz_time->lastname, 
+                html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
+                    'id' => $COURSE->id, 
+                    'userid' => $quiz_time->userid
+                ]), $quiz_time->firstname . ' ' . $quiz_time->lastname), 
                 gmdate($date_format, $quiz_time->timestart), 
                 gmdate($date_format, $quiz_time->timefinish),
                 format_period($quiz_time->timefinish - $quiz_time->timestart)
@@ -239,7 +243,19 @@ class grade_report_ppreport extends grade_report {
         WHERE state = 'finished' AND quiz = ?";
 
         $r = $DB->get_records_sql($sql, array($quizid));
-        echo "<div><b>Среднее значение: ". array_values($r)[0]->avg_diff . "</b></div>";   
+        return array_values($r)[0]->avg_diff;
+    }
+
+    public function print_quiz_page($quizid) {
+        global $DB, $OUTPUT, $COURSE;
+        $sql = "SELECT count(userid) AS studentsCount, avg(grade) AS gradeAvg FROM {quiz_grades} qg WHERE quiz = ?";
+        $result = $DB->get_record_sql($sql, array($quizid));
+        
+        $result->quizname = $DB->get_record_sql("SELECT name FROM {quiz} q WHERE id = ?", array($quizid))->name;
+        $result->quizUsersTable = $this->print_table($quizid);
+        $result->solveTimeAvg = $this->print_avg_data($quizid);
+
+        echo $OUTPUT->render_from_template("gradereport_ppreport/quiz", $result);
     }
 
     /**
@@ -247,7 +263,7 @@ class grade_report_ppreport extends grade_report {
      * @param bool $return Whether or not to return the data instead of printing it directly.
      * @return string
      */
-    public function print_table($quizid, $return=false) {
+    public function print_table($quizid, $return=true) {
         $this->fill_table($quizid);
         ob_start();
         $this->table->print_html();

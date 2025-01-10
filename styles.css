@@ -6,6 +6,10 @@
     width: 50%;
 }
 
+.quiz-header {
+    width: 50%;
+}
+
 .main-user-data > p {
     margin: 0;
 }

@@ -75,8 +75,7 @@ print_grade_page_head($courseid, 'report', 'ppreport', false, false, false,
 $report = new grade_report_ppreport($userid, $gpr, $context);
 
 if ($quizid) {
-    $report->print_table($quizid);
-    $report->print_avg_data($quizid);
+    $report->print_quiz_page($quizid);
 }
 else if ($userid){
     $report->print_user_page($userid);
