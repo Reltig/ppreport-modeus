@@ -26,10 +26,7 @@ if ($courseid != SITEID) {
     require_capability('gradereport/ppreport:view', $context);
 }
 
-if (empty($userid)) {
-    require_capability('moodle/grade:viewall', $context);
-
-} else {
+if (!empty($userid)) {
     if (!$DB->get_record('user', array('id'=>$userid, 'deleted'=>0)) or isguestuser($userid)) {
         throw new \moodle_exception('invaliduserid');
     }
