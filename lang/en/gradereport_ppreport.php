@@ -1,5 +1,5 @@
 <?php
-$string['pluginname'] = 'Имя плагина';
+$string['pluginname'] = 'Plugin Experts';
 $string['timestart'] = 'Время начала теста';
 $string['timefinish'] = 'Время окончание теста';
 $string['timediff'] = 'Время прохождения теста';

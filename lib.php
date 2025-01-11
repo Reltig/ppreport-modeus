@@ -220,7 +220,7 @@ class grade_report_ppreport extends grade_report {
         $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
 
         foreach ($quiz_times as $quiz_time) {
-            $date_format = 'Y-m-d\TH:i:s\Z';
+            $date_format = 'Y-m-d H:i:s';
             $data = [
                 html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
                     'id' => $COURSE->id, 
@@ -581,7 +581,7 @@ function gradereport_ppreport_myprofile_navigation(core_user\output\myprofile\tr
     $coursecontext = context_course::instance($course->id);
     if (grade_report_ppreport::check_access($systemcontext, $coursecontext, $usercontext, $course, $user->id)) {
         $url = new moodle_url('/grade/report/ppreport/index.php', array('userid' => $user->id, 'id' => $course->id));
-        $node = new core_user\output\myprofile\node('reports', 'gradesppreport', get_string('gradesppreport', 'gradereport_ppreport'),
+        $node = new core_user\output\myprofile\node('reports', 'gradesppreport', get_string('pluginname', 'gradereport_ppreport'),
                 null, $url);
         $tree->add_node($node);
     }
