@@ -209,9 +209,15 @@ class grade_report_ppreport extends grade_report {
                 ]), $quiz->name)
             ]);
         }
+        
         ob_start();
         $quizList->print_html();
-        return ob_get_clean();
+        $table_html = ob_get_clean();
+
+        $chart = $this->print_avg_time_chart();
+        $chart2 = $this->print_avg_grade_chart();
+
+        return $table_html . $chart . $chart2;
     }
 
     /**
@@ -522,46 +528,48 @@ class grade_report_ppreport extends grade_report {
         return ob_get_clean();
     }
 
-    // public function display() {
-    //     global $OUTPUT;
+    public function display() {
+        global $OUTPUT;
 
-    //     // Отображение таблицы
-    //     $this->fill_table($this->quizid);
-    //     echo $this->table->finish_output();
+        // Отображение таблицы
+        $this->fill_table($this->quizid);
+        echo $this->table->finish_output();
 
-    //     // Отображение графика
-    //     $chart = $this->print_avg_time_chart($this->quizid);
-    //     echo $chart;
-    // }
+        // Отображение графика
+        $chart = $this->print_avg_time_chart($this->quizid);
+        echo $chart;
+    }
 
-    // public function print_avg_time_chart($quizid) {
-    //     global $DB, $OUTPUT, $COURSE;
-
-    //     // Получаем данные о среднем времени за каждый тест
-    //     $sql = "SELECT q.id, q.name, AVG(qa.timefinish - qa.timestart) as avg_time FROM {quiz} q
-    //             JOIN {quiz_attempts} qa ON q.id = qa.quiz
-    //             WHERE q.course = ? AND qa.state = 'finished'
-    //             GROUP BY q.id, q.name";
-    //     $avg_times = $DB->get_records_sql($sql, array($COURSE->id));
-
-    //     // Создаем массивы для данных графика
-    //     $quiz_names = array();
-    //     $avg_times_array = array();
-
-    //     // Заполняем массивы данными
-    //     foreach ($avg_times as $avg_time) {
-    //         $quiz_names[] = $avg_time->name;
-    //         $avg_times_array[] = $avg_time->avg_time;
-    //     }
-
-    //     // Создаем график
-    //     $chart = new \core\chart_line();
-    //     $chart->add_series(new core\chart_series('Среднее время', $avg_times_array));
-    //     $chart->set_labels($quiz_names);
-
-    //     // Выводим график
-    //     return $OUTPUT->render($chart);
-    // }
+    public function print_avg_time_chart() {
+        global $DB, $OUTPUT, $COURSE;
+    
+        // Получаем данные о среднем времени выполнения тестов
+        $sql = "SELECT q.id, q.name, AVG(qa.timefinish - qa.timestart) as avg_time 
+                FROM {quiz} q
+                JOIN {quiz_attempts} qa ON q.id = qa.quiz
+                WHERE q.course = ? AND qa.state = 'finished'
+                GROUP BY q.id, q.name";
+        $avg_times = $DB->get_records_sql($sql, array($COURSE->id));
+    
+        // Создаем массивы для данных графика
+        $quiz_names = array();
+        $avg_times_array = array();
+    
+        // Заполняем массивы данными
+        foreach ($avg_times as $avg_time) {
+            $quiz_names[] = $avg_time->name;
+            $avg_times_array[] = $avg_time->avg_time;
+        }
+    
+        // Создаем график
+        $chart = new \core\chart_line(); // Используем столбчатую диаграмму
+        $series = new \core\chart_series('Среднее время выполнения', $avg_times_array);
+        $chart->add_series($series);
+        $chart->set_labels($quiz_names);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
 
     private function fill_user_quiz_grades_table(&$table, $userid) {
         global $DB, $COURSE, $OUTPUT;
@@ -577,7 +585,7 @@ class grade_report_ppreport extends grade_report {
         }
 
         foreach ($userQuizTimeData as $userQuizTime) {
-            $date_format = 'Y-m-d\TH:i:s\Z';
+            $date_format = 'Y-m-d H:i:s';
             $data = [
                 $userQuizTime->name,
                 gmdate($date_format, $userQuizTime->timestart), 
@@ -590,15 +598,53 @@ class grade_report_ppreport extends grade_report {
         }
     }
 
-    private function array_search_func(array $arr, $func)
-    {
-        foreach ($arr as $key => $v)
-            if ($func($v))
-                return $v;
 
-        return false;
+    public function print_avg_grade_chart() {
+        global $DB, $OUTPUT, $COURSE;
+
+        // Получаем данные о средних оценках за тесты
+        $sql = "SELECT q.id, q.name, AVG(qg.grade) as avg_grade 
+                FROM {quiz} q
+                JOIN {quiz_grades} qg ON q.id = qg.quiz
+                WHERE q.course = ?
+                GROUP BY q.id, q.name";
+        $avg_grades = $DB->get_records_sql($sql, array($COURSE->id));
+
+        // Создаем массивы для данных графика
+        $quiz_names = array();
+        $avg_grades_array = array();
+
+        // Заполняем массивы данными
+        foreach ($avg_grades as $avg_grade) {
+            $quiz_names[] = $avg_grade->name;
+            $avg_grades_array[] = $avg_grade->avg_grade;
+        }
+
+        // Создаем график
+        $chart = new \core\chart_bar();
+
+        // Создаем ось Y
+        $yaxis = new \core\chart_axis('y', 'Оценки', 'right');
+
+        // Устанавливаем ось Y в графике
+        $chart->set_yaxis($yaxis);
+
+        // Создаем ось X
+        $xaxis = new \core\chart_axis('x', 'Тесты', 'bottom');
+        $xaxis->set_labels($quiz_names);
+
+        // Устанавливаем ось X в графике
+        $chart->set_xaxis($xaxis);
+
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Средние оценки', $avg_grades_array);
+        $chart->add_series($series);
+
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
     }
 
+    
     /**
      * Check if the user can access the report.
      *
