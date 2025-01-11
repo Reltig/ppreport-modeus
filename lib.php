@@ -154,13 +154,17 @@ class grade_report_ppreport extends grade_report {
         $this->table = new flexible_table('grade-report-ppreport-'.$this->user->id);
 
         $tableheaders = array(
-            get_string('username', 'gradereport_ppreport'),
+            get_string('user'),
             get_string('timestart', 'gradereport_ppreport'),
             get_string('timefinish', 'gradereport_ppreport'),
-            get_string('timediff', 'gradereport_ppreport'),
+            get_string('timediff', 'gradereport_ppreport'), 
+            get_string('grade', 'gradereport_ppreport'),
+            get_string('attempts', 'gradereport_ppreport'),
+            get_string('avg_score', 'gradereport_ppreport'),
+            get_string('diff_btw_avg_time_and_fintime', 'gradereport_ppreport'),
         );
 
-        $tablecolumns = array('username', 'timestart', 'timefinish', 'timediff');
+        $tablecolumns = array('username', 'timestart', 'timefinish', 'timediff', 'grade', 'attempts', 'avg_score', 'diff_btw_avg_time_and_fintime');
 
         $this->table->define_columns($tablecolumns);
         $this->table->define_headers($tableheaders);
@@ -179,16 +183,35 @@ class grade_report_ppreport extends grade_report {
                 WHERE course = ?";
 
         $quizes = $DB->get_records_sql($sql, array($COURSE->id));
-        $html = '<ul>';
+        $quizList = new flexible_table('grade-report-ppreport-quiz-list'.$this->user->id);
+
+        $tableheaders = array(
+            get_string('quizname', 'gradereport_ppreport'),
+        );
+
+        $tablecolumns = array('quizname');
+
+        $quizList->define_columns($tablecolumns);
+        $quizList->define_headers($tableheaders);
+        $quizList->define_baseurl($this->baseurl);
+
+        $quizList->set_attribute('cellspacing', '0');
+        $quizList->set_attribute('id', 'ppreport-quiz-list');
+        $quizList->set_attribute('class', 'boxaligncenter generaltable');
+
+        $quizList->setup();
+
         foreach($quizes as $quiz) {
-            $html .= '<li>' . html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
-                'id' => $COURSE->id, 
-                'quizid' => $quiz->id
-            ]), $quiz->name)
-            . '</li>';
+            $quizList->add_data([
+                html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
+                    'id' => $COURSE->id, 
+                    'quizid' => $quiz->id
+                ]), $quiz->name)
+            ]);
         }
-        $html .= '</ul>';
-        return $html;
+        ob_start();
+        $quizList->print_html();
+        return ob_get_clean();
     }
 
     /**
@@ -200,9 +223,10 @@ class grade_report_ppreport extends grade_report {
     public function setup_courses_data($quizid, $studentcoursesonly) {
         global $USER, $DB;
 
-        $sql = "SELECT timestart, timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_attempts} qa
+        $sql = "SELECT qa.timestart, qa.timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_grades} qg
+                LEFT JOIN {quiz_attempts} qa ON qa.quiz = qg.quiz AND qa.timefinish = qg.timemodified
                 LEFT JOIN {user} u ON qa.userid = u.id
-                WHERE state = 'finished' AND quiz = ?
+                WHERE state = 'finished' AND qg.quiz = ?
                 ORDER BY timefinish - timestart";
 
         return $DB->get_records_sql($sql, array($quizid));
@@ -220,6 +244,37 @@ class grade_report_ppreport extends grade_report {
         $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
 
         foreach ($quiz_times as $quiz_time) {
+
+            // Getting user's grade for the test
+            $grade = $DB->get_field('quiz_grades', 'grade', [
+                'quiz' => $quizid,
+                'userid' => $quiz_time->userid
+            ]);
+
+            $attempts_count = $DB->count_records('quiz_attempts', [
+                'quiz' => $quizid,
+                'userid' => $quiz_time->userid,
+                'state' => 'finished' // Count only finished attempts
+            ]);
+
+            $attempts = $DB->get_records('quiz_attempts', [
+                'quiz' => $quizid,
+                'userid' => $quiz_time->userid,
+                'state' => 'finished' // Учитываем только завершенные попытки
+            ]);
+
+            // Count avg score for all attempts
+            $sum_grades = 0;
+            foreach ($attempts as $attempt) {
+                $sum_grades += $attempt->sumgrades;
+            }
+            $avg_grade = $attempts_count > 0 ? $sum_grades / $attempts_count : 0;
+
+            // Рассчитываем разницу между средним временем выполнения и временем выполнения
+            $time_diff = $quiz_time->timefinish - $quiz_time->timestart;
+            $avg_time_diff = $avg_time;
+            $diff = $time_diff - $avg_time_diff;
+
             $date_format = 'Y-m-d H:i:s';
             $data = [
                 html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
@@ -228,7 +283,11 @@ class grade_report_ppreport extends grade_report {
                 ]), $quiz_time->firstname . ' ' . $quiz_time->lastname), 
                 gmdate($date_format, $quiz_time->timestart), 
                 gmdate($date_format, $quiz_time->timefinish),
-                format_period($quiz_time->timefinish - $quiz_time->timestart)
+                format_period($quiz_time->timefinish - $quiz_time->timestart),
+                $grade !== false ? format_float($grade, 2) : 'N/A',
+                $attempts_count,
+                format_float($avg_grade, 2),
+                format_period($diff)
             ];
             
             $this->table->add_data($data);
@@ -239,8 +298,9 @@ class grade_report_ppreport extends grade_report {
 
     public function print_avg_data($quizid) {
         global $DB;
-        $sql = "SELECT avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
-        WHERE state = 'finished' AND quiz = ?";
+        $sql = "SELECT qg.id, qa.timefinish - qa.timestart as avg_diff FROM {quiz_grades} qg
+        LEFT JOIN {quiz_attempts} qa ON qa.quiz =  qg.quiz and qa.timefinish and qg.timemodified
+        WHERE qg.quiz = ?";
 
         $r = $DB->get_records_sql($sql, array($quizid));
         return array_values($r)[0]->avg_diff;
@@ -332,7 +392,7 @@ class grade_report_ppreport extends grade_report {
         $userGrades = array_map(fn ($x) => $x->grade, $data);
         $solvedQuizCount = count($userGrades);
         $sumQuizGrade = array_sum($userGrades);
-        $gradeAvg = $sumQuizGrade / $solvedQuizCount;
+        $gradeAvg = $solvedQuizCount == 0 ? 0 : $sumQuizGrade / $solvedQuizCount;
 
         $result->solvedQuizCount = $solvedQuizCount;
         $result->sumQuizGrade = $sumQuizGrade;
@@ -439,15 +499,59 @@ class grade_report_ppreport extends grade_report {
         return ob_get_clean();
     }
 
+    // public function display() {
+    //     global $OUTPUT;
+
+    //     // Отображение таблицы
+    //     $this->fill_table($this->quizid);
+    //     echo $this->table->finish_output();
+
+    //     // Отображение графика
+    //     $chart = $this->print_avg_time_chart($this->quizid);
+    //     echo $chart;
+    // }
+
+    // public function print_avg_time_chart($quizid) {
+    //     global $DB, $OUTPUT, $COURSE;
+
+    //     // Получаем данные о среднем времени за каждый тест
+    //     $sql = "SELECT q.id, q.name, AVG(qa.timefinish - qa.timestart) as avg_time FROM {quiz} q
+    //             JOIN {quiz_attempts} qa ON q.id = qa.quiz
+    //             WHERE q.course = ? AND qa.state = 'finished'
+    //             GROUP BY q.id, q.name";
+    //     $avg_times = $DB->get_records_sql($sql, array($COURSE->id));
+
+    //     // Создаем массивы для данных графика
+    //     $quiz_names = array();
+    //     $avg_times_array = array();
+
+    //     // Заполняем массивы данными
+    //     foreach ($avg_times as $avg_time) {
+    //         $quiz_names[] = $avg_time->name;
+    //         $avg_times_array[] = $avg_time->avg_time;
+    //     }
+
+    //     // Создаем график
+    //     $chart = new \core\chart_line();
+    //     $chart->add_series(new core\chart_series('Среднее время', $avg_times_array));
+    //     $chart->set_labels($quiz_names);
+
+    //     // Выводим график
+    //     return $OUTPUT->render($chart);
+    // }
+
     private function fill_user_quiz_grades_table(&$table, $userid) {
         global $DB, $COURSE, $OUTPUT;
         //TODO: extract to func
         $sql = "SELECT q.id, q.name, qg.grade, qa.quiz, qa.timefinish - qa.timestart as timediff, avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
-                INNER JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
-                INNER JOIN {quiz} q ON q.id = qa.quiz
+                JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
+                JOIN {quiz} q ON q.id = qa.quiz
                 WHERE q.course = ? AND qg.userid = ? 
                 ORDER BY q.timecreated ASC";
         $userQuizTimeData = array_values($DB->get_records_sql($sql, array($COURSE->id, $userid)));
+        if ($userQuizTimeData[0]->id == null) {
+            return;
+        }
 
         foreach ($userQuizTimeData as $userQuizTime) {
             $date_format = 'Y-m-d\TH:i:s\Z';
