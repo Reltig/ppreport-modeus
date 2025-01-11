@@ -232,6 +232,25 @@ class grade_report_ppreport extends grade_report {
         return $DB->get_records_sql($sql, array($quizid));
     }
 
+
+    /**
+     * Вычисляет среднее время выполнения теста.
+     *
+     * @param int $quizid Идентификатор теста
+     * @return float Среднее время выполнения теста
+     */
+    protected function calculate_avg_time_solve($quizid) {
+        global $DB;
+
+        // Получаем среднее время выполнения теста
+        $sql = "SELECT AVG(timefinish - timestart) as avg_time 
+                FROM {quiz_attempts} 
+                WHERE quiz = :quizid AND state = 'finished'";
+        $avg_time = $DB->get_field_sql($sql, ['quizid' => $quizid]);
+
+        return $avg_time ? (float)$avg_time : 0;
+    }
+
     /**
      * Fill the table for displaying.
      *
@@ -242,6 +261,9 @@ class grade_report_ppreport extends grade_report {
         global $CFG, $DB, $OUTPUT, $USER, $COURSE;
 
         $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
+
+        // Вычисляем среднее время выполнения теста (avg_time_solve)
+        $avg_time_solve = $this->print_avg_data($quizid);
 
         foreach ($quiz_times as $quiz_time) {
 
@@ -270,10 +292,11 @@ class grade_report_ppreport extends grade_report {
             }
             $avg_grade = $attempts_count > 0 ? $sum_grades / $attempts_count : 0;
 
-            // Рассчитываем разницу между средним временем выполнения и временем выполнения
+            // Рассчитываем время выполнения теста для текущего пользователя
             $time_diff = $quiz_time->timefinish - $quiz_time->timestart;
-            $avg_time_diff = $avg_time;
-            $diff = $time_diff - $avg_time_diff;
+
+            // Рассчитываем разницу между средним временем выполнения и временем выполнения текущего пользователя
+            $time_diff_avg = $time_diff - $avg_time_solve;
 
             $date_format = 'Y-m-d H:i:s';
             $data = [
@@ -287,7 +310,7 @@ class grade_report_ppreport extends grade_report {
                 $grade !== false ? format_float($grade, 2) : 'N/A',
                 $attempts_count,
                 format_float($avg_grade, 2),
-                format_period($diff)
+                format_period($time_diff_avg)
             ];
             
             $this->table->add_data($data);
