@@ -154,10 +154,10 @@ class grade_report_ppreport extends grade_report {
         $this->table = new flexible_table('grade-report-ppreport-'.$this->user->id);
 
         $tableheaders = array(
-            get_string('user'),
-            get_string('timestart'),
-            get_string('timefinish'),
-            get_string('timediff')
+            get_string('username', 'gradereport_ppreport'),
+            get_string('timestart', 'gradereport_ppreport'),
+            get_string('timefinish', 'gradereport_ppreport'),
+            get_string('timediff', 'gradereport_ppreport'),
         );
 
         $tablecolumns = array('username', 'timestart', 'timefinish', 'timediff');
@@ -414,11 +414,11 @@ class grade_report_ppreport extends grade_report {
         $userQuizTable = new flexible_table('grade-report-ppreport-'.$this->user->id);
 
         $tableheaders = array(
-            get_string('quizname'),
-            get_string('timestart'),
-            get_string('timefinish'),
-            get_string('timediff'),
-            get_string('grade'),
+            get_string('quizname', 'gradereport_ppreport'),
+            get_string('timestart', 'gradereport_ppreport'),
+            get_string('timefinish', 'gradereport_ppreport'),
+            get_string('timediff', 'gradereport_ppreport'),
+            get_string('grade', 'gradereport_ppreport'),
         );
 
         $tablecolumns = array('quizname', 'timestart', 'timefinish', 'timediff', 'grade');
