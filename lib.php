@@ -155,9 +155,9 @@ class grade_report_ppreport extends grade_report {
 
         $tableheaders = array(
             get_string('user'),
-            get_string('timestart'),
-            get_string('timefinish'),
-            get_string('timediff')
+            get_string('timestart', 'gradereport_ppreport'),
+            get_string('timefinish', 'gradereport_ppreport'),
+            get_string('timediff', 'gradereport_ppreport')
         );
 
         $tablecolumns = array('username', 'timestart', 'timefinish', 'timediff');
@@ -179,16 +179,35 @@ class grade_report_ppreport extends grade_report {
                 WHERE course = ?";
 
         $quizes = $DB->get_records_sql($sql, array($COURSE->id));
-        $html = '<ul>';
+        $quizList = new flexible_table('grade-report-ppreport-quiz-list'.$this->user->id);
+
+        $tableheaders = array(
+            get_string('quizname', 'gradereport_ppreport'),
+        );
+
+        $tablecolumns = array('quizname');
+
+        $quizList->define_columns($tablecolumns);
+        $quizList->define_headers($tableheaders);
+        $quizList->define_baseurl($this->baseurl);
+
+        $quizList->set_attribute('cellspacing', '0');
+        $quizList->set_attribute('id', 'ppreport-quiz-list');
+        $quizList->set_attribute('class', 'boxaligncenter generaltable');
+
+        $quizList->setup();
+
         foreach($quizes as $quiz) {
-            $html .= '<li>' . html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
-                'id' => $COURSE->id, 
-                'quizid' => $quiz->id
-            ]), $quiz->name)
-            . '</li>';
+            $quizList->add_data([
+                html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
+                    'id' => $COURSE->id, 
+                    'quizid' => $quiz->id
+                ]), $quiz->name)
+            ]);
         }
-        $html .= '</ul>';
-        return $html;
+        ob_start();
+        $quizList->print_html();
+        return ob_get_clean();
     }
 
     /**
@@ -200,9 +219,10 @@ class grade_report_ppreport extends grade_report {
     public function setup_courses_data($quizid, $studentcoursesonly) {
         global $USER, $DB;
 
-        $sql = "SELECT timestart, timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_attempts} qa
+        $sql = "SELECT qa.timestart, qa.timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_grades} qg
+                LEFT JOIN {quiz_attempts} qa ON qa.quiz = qg.quiz AND qa.timefinish = qg.timemodified
                 LEFT JOIN {user} u ON qa.userid = u.id
-                WHERE state = 'finished' AND quiz = ?
+                WHERE state = 'finished' AND qg.quiz = ?
                 ORDER BY timefinish - timestart";
 
         return $DB->get_records_sql($sql, array($quizid));
@@ -239,8 +259,9 @@ class grade_report_ppreport extends grade_report {
 
     public function print_avg_data($quizid) {
         global $DB;
-        $sql = "SELECT avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
-        WHERE state = 'finished' AND quiz = ?";
+        $sql = "SELECT qg.id, qa.timefinish - qa.timestart as avg_diff FROM {quiz_grades} qg
+        LEFT JOIN {quiz_attempts} qa ON qa.quiz =  qg.quiz and qa.timefinish and qg.timemodified
+        WHERE qg.quiz = ?";
 
         $r = $DB->get_records_sql($sql, array($quizid));
         return array_values($r)[0]->avg_diff;
@@ -332,7 +353,7 @@ class grade_report_ppreport extends grade_report {
         $userGrades = array_map(fn ($x) => $x->grade, $data);
         $solvedQuizCount = count($userGrades);
         $sumQuizGrade = array_sum($userGrades);
-        $gradeAvg = $sumQuizGrade / $solvedQuizCount;
+        $gradeAvg = $solvedQuizCount == 0 ? 0 : $sumQuizGrade / $solvedQuizCount;
 
         $result->solvedQuizCount = $solvedQuizCount;
         $result->sumQuizGrade = $sumQuizGrade;
@@ -414,11 +435,11 @@ class grade_report_ppreport extends grade_report {
         $userQuizTable = new flexible_table('grade-report-ppreport-'.$this->user->id);
 
         $tableheaders = array(
-            get_string('quizname'),
-            get_string('timestart'),
-            get_string('timefinish'),
-            get_string('timediff'),
-            get_string('grade'),
+            get_string('quizname', 'gradereport_ppreport'),
+            get_string('timestart', 'gradereport_ppreport'),
+            get_string('timefinish', 'gradereport_ppreport'),
+            get_string('timediff', 'gradereport_ppreport'),
+            get_string('grade', 'gradereport_ppreport'),
         );
 
         $tablecolumns = array('quizname', 'timestart', 'timefinish', 'timediff', 'grade');
@@ -443,11 +464,14 @@ class grade_report_ppreport extends grade_report {
         global $DB, $COURSE, $OUTPUT;
         //TODO: extract to func
         $sql = "SELECT q.id, q.name, qg.grade, qa.quiz, qa.timefinish - qa.timestart as timediff, avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
-                INNER JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
-                INNER JOIN {quiz} q ON q.id = qa.quiz
+                JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
+                JOIN {quiz} q ON q.id = qa.quiz
                 WHERE q.course = ? AND qg.userid = ? 
                 ORDER BY q.timecreated ASC";
         $userQuizTimeData = array_values($DB->get_records_sql($sql, array($COURSE->id, $userid)));
+        if ($userQuizTimeData[0]->id == null) {
+            return;
+        }
 
         foreach ($userQuizTimeData as $userQuizTime) {
             $date_format = 'Y-m-d\TH:i:s\Z';
