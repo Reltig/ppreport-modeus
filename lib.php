@@ -335,16 +335,158 @@ class grade_report_ppreport extends grade_report {
         return array_values($r)[0]->avg_diff;
     }
 
-    public function print_quiz_page($quizid) {
+    public function print_quiz_page($quizid, $groupid = 0) {
         global $DB, $OUTPUT, $COURSE;
-        $sql = "SELECT count(userid) AS studentsCount, avg(grade) AS gradeAvg FROM {quiz_grades} qg WHERE quiz = ?";
-        $result = $DB->get_record_sql($sql, array($quizid));
         
+        // Get basic quiz info
+        $sql = "SELECT count(DISTINCT qg.userid) AS studentsCount, avg(grade) AS gradeAvg 
+                FROM {quiz_grades} qg 
+                JOIN {user} u ON u.id = qg.userid
+                WHERE quiz = ?";
+        $params = array($quizid);
+        
+        // Add group filter if specified
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+        
+        $result = $DB->get_record_sql($sql, $params);
         $result->quizname = $DB->get_record_sql("SELECT name FROM {quiz} q WHERE id = ?", array($quizid))->name;
-        $result->quizUsersTable = $this->print_table($quizid);
-        $result->solveTimeAvg = $this->print_avg_data($quizid);
-
+        
+        // Add charts
+        $result->timeChart = $this->generate_time_chart($quizid, $groupid);
+        $result->gradeChart = $this->generate_grade_chart($quizid, $groupid);
+        
+        // Add detailed table
+        $result->quizUsersTable = $this->print_table($quizid, $groupid);
+        
+        $result->gradeDistributionChart = $this->generate_grade_distribution_chart($quizid, $groupid);
+        $result->attemptsProgressChart = $this->generate_attempts_progress_chart($quizid, $groupid);
+        
         echo $OUTPUT->render_from_template("gradereport_ppreport/quiz", $result);
+    }
+
+    
+
+    protected function generate_attempts_progress_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+    
+        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username,
+                qa.attempt,
+                ROUND(qa.sumgrades, 2) as grade
+                FROM {quiz_attempts} qa
+                JOIN {user} u ON u.id = qa.userid
+                WHERE qa.quiz = ? AND qa.state = 'finished'";
+        
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+
+        $sql .= " ORDER BY u.id, qa.attempt";
+        
+        $attempts = $DB->get_records_sql($sql, $params);
+    
+        $data = array();
+        foreach ($attempts as $attempt) {
+            if (!isset($data[$attempt->username])) {
+                $data[$attempt->username] = array();
+            }
+            $data[$attempt->username][] = $attempt->grade;
+        }
+    
+        $chart = new \core\chart_line();
+        $chart->set_title('Прогресс по попыткам');
+    
+        foreach ($data as $username => $grades) {
+            $series = new \core\chart_series($username, $grades);
+            $chart->add_series($series);
+        }
+    
+        $chart->set_labels(range(1, max(array_map('count', $data))));
+        
+        return $OUTPUT->render($chart);
+    }
+
+    protected function generate_time_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+
+        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username, 
+                qa.timefinish - qa.timestart as solve_time
+                FROM {quiz_attempts} qa
+                JOIN {user} u ON u.id = qa.userid
+                WHERE qa.quiz = ? AND qa.state = 'finished'";
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+
+        $attempts = $DB->get_records_sql($sql, $params);
+
+        $usernames = array();
+        $times = array();
+        foreach ($attempts as $attempt) {
+            $usernames[] = $attempt->username;
+            $times[] = $attempt->solve_time;
+        }
+
+        $chart = new \core\chart_bar();
+        $chart->set_title('Время выполнения теста');
+        $series = new \core\chart_series('Затраченное время', $times);
+        $chart->add_series($series);
+        $chart->set_labels($usernames);
+
+        return $OUTPUT->render($chart);
+    }
+
+    protected function generate_grade_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+
+        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username, 
+                qg.grade
+                FROM {quiz_grades} qg
+                JOIN {user} u ON u.id = qg.userid
+                WHERE qg.quiz = ?";
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+
+        $grades = $DB->get_records_sql($sql, $params);
+
+        $usernames = array();
+        $gradeValues = array();
+        foreach ($grades as $grade) {
+            $usernames[] = $grade->username;
+            $gradeValues[] = $grade->grade;
+        }
+
+        $chart = new \core\chart_bar();
+        $chart->set_title('Оценки студентов');
+        $series = new \core\chart_series('Оценка', $gradeValues);
+        $chart->add_series($series);
+        $chart->set_labels($usernames);
+
+        return $OUTPUT->render($chart);
     }
 
     /**
@@ -362,6 +504,18 @@ class grade_report_ppreport extends grade_report {
         } else {
             echo $html;
         }
+    }
+
+    /**
+     * Fetches the list of student groups for the current course.
+     *
+     * @return array An array of groups with their IDs and names.
+     */
+    public function get_student_groups() {
+        global $DB, $COURSE;
+
+        $groups = $DB->get_records('groups', ['courseid' => $COURSE->id], 'name', 'id, name');
+        return $groups;
     }
 
     /**
@@ -700,6 +854,52 @@ class grade_report_ppreport extends grade_report {
             )
         );
         $event->trigger();
+    }
+
+    protected function generate_grade_distribution_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+
+        $sql = "SELECT 
+                CASE 
+                    WHEN grade >= 90 THEN '90-100'
+                    WHEN grade >= 80 THEN '80-89'
+                    WHEN grade >= 70 THEN '70-79'
+                    WHEN grade >= 60 THEN '60-69'
+                    ELSE '0-59'
+                END as grade_range,
+                COUNT(*) as count
+                FROM {quiz_grades} qg
+                JOIN {user} u ON u.id = qg.userid
+                WHERE quiz = ?";
+        
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+
+        $sql .= " GROUP BY grade_range ORDER BY grade_range DESC";
+        
+        $distribution = $DB->get_records_sql($sql, $params);
+
+        $ranges = array();
+        $counts = array();
+        foreach ($distribution as $range) {
+            $ranges[] = $range->grade_range;
+            $counts[] = $range->count;
+        }
+
+        $chart = new \core\chart_pie();
+        $chart->set_title('Распределение оценок');
+        $series = new \core\chart_series('Количество студентов', $counts);
+        $chart->add_series($series);
+        $chart->set_labels($ranges);
+
+        return $OUTPUT->render($chart);
     }
 }
 

@@ -52,4 +52,22 @@ class gradereport_ppreport_renderer extends plugin_renderer_base {
         $this->page->requires->js_call_amd('gradereport_ppreport/user', 'init');
         return $this->render_from_template($searchdropdown->get_template(), $searchdropdown->export_for_template($this));
     }
+
+    /**
+     * Renders the group selector dropdown.
+     *
+     * @param object $course The course object.
+     * @return string The raw HTML to render.
+     */
+    public function group_selector(object $course): string {
+        $groups = $this->get_student_groups(); // Fetch groups from lib.php
+        $options = '';
+
+        foreach ($groups as $group) {
+            $options .= html_writer::tag('option', $group->name, ['value' => $group->id]);
+        }
+
+        $dropdown = html_writer::tag('select', $options, ['name' => 'groupid', 'id' => 'groupid']);
+        return html_writer::tag('label', 'Выбор группы пользователя') . $dropdown;
+    }
 }
