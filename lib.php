@@ -217,8 +217,9 @@ class grade_report_ppreport extends grade_report {
         $chart = $this->print_avg_time_chart();
         $chart2 = $this->print_avg_grades_pie_chart();
         $chart3 = $this->print_avg_attempts_pie_chart();
+        $chart4 = $this->print_performance_comparison_chart();
 
-        return $table_html . $chart . $chart2 . $chart3;
+        return $table_html . $chart . $chart2 . $chart3 . $chart4;
     }
 
     /**
@@ -372,7 +373,56 @@ class grade_report_ppreport extends grade_report {
         echo $OUTPUT->render_from_template("gradereport_ppreport/quiz", $result);
     }
 
+    protected function print_performance_comparison_chart() {
+        global $DB, $OUTPUT, $COURSE;
     
+        // Получаем средние оценки по группам
+        $sql = "SELECT g.id AS group_id, g.name AS group_name, AVG(qg.grade) AS avg_grade
+                FROM {groups} g
+                JOIN {groups_members} gm ON g.id = gm.groupid
+                JOIN {user} u ON u.id = gm.userid
+                JOIN {quiz_grades} qg ON u.id = qg.userid
+                JOIN {quiz} q ON q.id = qg.quiz
+                WHERE q.course = ?
+                GROUP BY g.id, g.name";
+    
+        $params = array($COURSE->id);
+        $group_performance = $DB->get_records_sql($sql, $params);
+    
+        // Проверяем, есть ли группы
+        if (empty($group_performance)) {
+            return '<div class="no-groups-message">Нет доступных групп для отображения успеваемости по группам.</div>';
+        }
+    
+        // Подготовка данных для графика
+        $group_names = array();
+        $avg_grades = array();
+    
+        foreach ($group_performance as $performance) {
+            $group_names[] = $performance->group_name;
+            $avg_grades[] = $performance->avg_grade;
+        }
+    
+        // Создаем столбчатую диаграмму
+        $chart = new \core\chart_bar();
+        $chart->set_title('Сравнение успеваемости по группам');
+    
+        // Устанавливаем ось Y
+        $yaxis = new \core\chart_axis('y', 'Средняя оценка', 'right');
+        $chart->set_yaxis($yaxis);
+    
+        // Устанавливаем ось X
+        $xaxis = new \core\chart_axis('x', 'Группы', 'bottom');
+        $xaxis->set_labels($group_names);
+        $chart->set_xaxis($xaxis);
+    
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Средняя оценка', $avg_grades);
+        $chart->add_series($series);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
 
     protected function generate_attempts_progress_pie_chart($quizid, $groupid = 0) {
         global $DB, $OUTPUT;
@@ -705,7 +755,8 @@ class grade_report_ppreport extends grade_report {
         $chart = $this->print_avg_time_chart($this->quizid);
         $chart2 = $this->print_avg_grades_pie_chart($this->quizid);
         $chart3 = $this->print_avg_attempts_pie_chart($this->quizid);
-        echo $chart . $chart2 . $chart3;
+        $chart4 = $this->print_performance_comparison_chart($this->quizid);
+        echo $chart . $chart2 . $chart3 . $chart4;
     }
 
     public function print_avg_attempts_pie_chart() {
