@@ -216,8 +216,9 @@ class grade_report_ppreport extends grade_report {
 
         $chart = $this->print_avg_time_chart();
         $chart2 = $this->print_avg_grade_chart();
+        $chart3 = $this->print_avg_attempts_chart();
 
-        return $table_html . $chart . $chart2;
+        return $table_html . $chart . $chart2 . $chart3;
     }
 
     /**
@@ -363,6 +364,7 @@ class grade_report_ppreport extends grade_report {
         
         // Add detailed table
         $result->quizUsersTable = $this->print_table($quizid, $groupid);
+        $result->solveTimeAvg = $this->calculate_avg_time_solve($quizid);
         
         $result->gradeDistributionChart = $this->generate_grade_distribution_chart($quizid, $groupid);
         $result->attemptsProgressChart = $this->generate_attempts_progress_chart($quizid, $groupid);
@@ -375,15 +377,16 @@ class grade_report_ppreport extends grade_report {
     protected function generate_attempts_progress_chart($quizid, $groupid = 0) {
         global $DB, $OUTPUT;
     
+        // Получаем данные о попытках для каждого пользователя
         $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username,
                 qa.attempt,
                 ROUND(qa.sumgrades, 2) as grade
                 FROM {quiz_attempts} qa
                 JOIN {user} u ON u.id = qa.userid
                 WHERE qa.quiz = ? AND qa.state = 'finished'";
-        
+    
         $params = array($quizid);
-
+    
         if ($groupid) {
             $sql .= " AND EXISTS (
                 SELECT 1 FROM {groups_members} gm 
@@ -391,29 +394,34 @@ class grade_report_ppreport extends grade_report {
             )";
             $params[] = $groupid;
         }
-
+    
         $sql .= " ORDER BY u.id, qa.attempt";
-        
+    
         $attempts = $DB->get_records_sql($sql, $params);
     
+        // Подготовка данных для графика
         $data = array();
         foreach ($attempts as $attempt) {
             if (!isset($data[$attempt->username])) {
                 $data[$attempt->username] = array();
             }
-            $data[$attempt->username][] = $attempt->grade;
+            $data[$attempt->username][] = $attempt->grade; // Сохраняем оценку для каждого пользователя
         }
     
+        // Создаем график
         $chart = new \core\chart_line();
         $chart->set_title('Прогресс по попыткам');
     
+        // Добавляем данные для каждого пользователя
         foreach ($data as $username => $grades) {
             $series = new \core\chart_series($username, $grades);
             $chart->add_series($series);
         }
     
-        $chart->set_labels(range(1, max(array_map('count', $data))));
-        
+        // Устанавливаем метки по оси X
+        $chart->set_labels(range(1, max(array_map('count', $data)))); // Номера попыток
+    
+        // Возвращаем HTML-код графика
         return $OUTPUT->render($chart);
     }
 
@@ -691,7 +699,85 @@ class grade_report_ppreport extends grade_report {
 
         // Отображение графика
         $chart = $this->print_avg_time_chart($this->quizid);
-        echo $chart;
+        $chart2 = $this->print_avg_grade_chart($this->quizid);
+        $chart3 = $this->print_avg_attempts_chart($this->quizid);
+        echo $chart . $chart2 . $chart3;
+    }
+
+    public function print_avg_attempts_chart() {
+        global $DB, $OUTPUT, $COURSE;
+
+        // Получаем данные о количестве попыток за тесты
+        $sql = "SELECT 
+                    u.id AS user_id,
+                    CONCAT(u.firstname, ' ', u.lastname) AS username,
+                    q.id AS quiz_id,
+                    q.name AS quiz_name,
+                    qa.attempt,
+                    qa.timefinish,
+                    qa.sumgrades AS grade,
+                    qa.state
+                FROM 
+                    {quiz_attempts} qa
+                JOIN 
+                    {user} u ON u.id = qa.userid
+                JOIN 
+                    {quiz} q ON q.id = qa.quiz
+                WHERE 
+                    qa.state = 'finished' -- Получаем только завершенные попытки
+                ORDER BY 
+                    u.id, q.id, qa.attempt;";
+        $attempts_data = $DB->get_records_sql($sql, array($COURSE->id));
+
+        // Проверяем, что данные получены
+        if (empty($attempts_data)) {
+            return 'Нет данных для отображения графика.'; // Если данных нет, возвращаем сообщение
+        }
+
+        // Создаем массивы для данных графика
+        $quiz_names = array();
+        $attempts_counts = array();
+
+        // Заполняем массивы данными
+        foreach ($attempts_data as $data) {
+            $quiz_names[] = $data->name;
+            $attempts_counts[] = $data->attempts_count;
+        }
+
+        // Проверяем, есть ли данные для графика
+        if (empty($attempts_counts)) {
+            return 'Нет данных для отображения графика.'; // Если данных нет, возвращаем сообщение
+        }
+
+        // Создаем график
+        $chart = new \core\chart_bar();
+        $chart->set_title('Среднее количество попыток по тестам');
+
+        // Создаем ось Y
+        $yaxis = new \core\chart_axis('y', 'Количество попыток', 'right');
+        $chart->set_yaxis($yaxis);
+
+        // Создаем ось X
+        $xaxis = new \core\chart_axis('x', 'Тесты', 'bottom');
+        $xaxis->set_labels($quiz_names);
+        $chart->set_xaxis($xaxis);
+
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Среднее количество попыток', $attempts_counts);
+        $chart->add_series($series);
+
+        // Проверяем, что график был успешно создан
+        if (!$chart) {
+            return 'Ошибка при создании графика.';
+        }
+
+        // Возвращаем HTML-код графика
+        $chart_html = $OUTPUT->render($chart);
+        if (empty($chart_html)) {
+            return 'График не был сгенерирован.';
+        }
+
+        return $chart_html;
     }
 
     public function print_avg_time_chart() {
@@ -774,20 +860,22 @@ class grade_report_ppreport extends grade_report {
             $avg_grades_array[] = $avg_grade->avg_grade;
         }
 
+        // Проверяем, есть ли данные для графика
+        if (empty($avg_grades_array)) {
+            return ''; // Если данных нет, возвращаем пустую строку
+        }
+
         // Создаем график
         $chart = new \core\chart_bar();
+        $chart->set_title('Средние оценки по тестам');
 
         // Создаем ось Y
         $yaxis = new \core\chart_axis('y', 'Оценки', 'right');
-
-        // Устанавливаем ось Y в графике
         $chart->set_yaxis($yaxis);
 
         // Создаем ось X
         $xaxis = new \core\chart_axis('x', 'Тесты', 'bottom');
         $xaxis->set_labels($quiz_names);
-
-        // Устанавливаем ось X в графике
         $chart->set_xaxis($xaxis);
 
         // Добавляем серию данных в график
@@ -900,6 +988,22 @@ class grade_report_ppreport extends grade_report {
         $chart->set_labels($ranges);
 
         return $OUTPUT->render($chart);
+    }
+
+    /**
+     * Ищет элемент в массиве по заданному условию.
+     *
+     * @param array $array Массив для поиска.
+     * @param callable $callback Функция обратного вызова для проверки условия.
+     * @return mixed Найденный элемент или null, если не найден.
+     */
+    private function array_search_func(array $array, callable $callback) {
+        foreach ($array as $item) {
+            if ($callback($item)) {
+                return $item;
+            }
+        }
+        return null; // Возвращаем null, если элемент не найден
     }
 }
 
