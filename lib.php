@@ -157,10 +157,14 @@ class grade_report_ppreport extends grade_report {
             get_string('user'),
             get_string('timestart', 'gradereport_ppreport'),
             get_string('timefinish', 'gradereport_ppreport'),
-            get_string('timediff', 'gradereport_ppreport')
+            get_string('timediff', 'gradereport_ppreport'), 
+            get_string('grade', 'gradereport_ppreport'),
+            get_string('attempts', 'gradereport_ppreport'),
+            get_string('avg_score', 'gradereport_ppreport'),
+            get_string('diff_btw_avg_time_and_fintime', 'gradereport_ppreport'),
         );
 
-        $tablecolumns = array('username', 'timestart', 'timefinish', 'timediff');
+        $tablecolumns = array('username', 'timestart', 'timefinish', 'timediff', 'grade', 'attempts', 'avg_score', 'diff_btw_avg_time_and_fintime');
 
         $this->table->define_columns($tablecolumns);
         $this->table->define_headers($tableheaders);
@@ -205,9 +209,17 @@ class grade_report_ppreport extends grade_report {
                 ]), $quiz->name)
             ]);
         }
+        
         ob_start();
         $quizList->print_html();
-        return ob_get_clean();
+        $table_html = ob_get_clean();
+
+        $chart = $this->print_avg_time_chart();
+        $chart2 = $this->print_avg_grades_pie_chart();
+        $chart3 = $this->print_avg_attempts_pie_chart();
+        $chart4 = $this->print_performance_comparison_chart();
+
+        return $table_html . $chart . $chart2 . $chart3 . $chart4;
     }
 
     /**
@@ -228,6 +240,25 @@ class grade_report_ppreport extends grade_report {
         return $DB->get_records_sql($sql, array($quizid));
     }
 
+
+    /**
+     * Вычисляет среднее время выполнения теста.
+     *
+     * @param int $quizid Идентификатор теста
+     * @return float Среднее время выполнения теста
+     */
+    protected function calculate_avg_time_solve($quizid) {
+        global $DB;
+
+        // Получаем среднее время выполнения теста
+        $sql = "SELECT AVG(timefinish - timestart) as avg_time 
+                FROM {quiz_attempts} 
+                WHERE quiz = :quizid AND state = 'finished'";
+        $avg_time = $DB->get_field_sql($sql, ['quizid' => $quizid]);
+
+        return $avg_time ? (float)$avg_time : 0;
+    }
+
     /**
      * Fill the table for displaying.
      *
@@ -239,8 +270,43 @@ class grade_report_ppreport extends grade_report {
 
         $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
 
+        // Вычисляем среднее время выполнения теста (avg_time_solve)
+        $avg_time_solve = $this->print_avg_data($quizid);
+
         foreach ($quiz_times as $quiz_time) {
-            $date_format = 'Y-m-d\TH:i:s\Z';
+
+            // Getting user's grade for the test
+            $grade = $DB->get_field('quiz_grades', 'grade', [
+                'quiz' => $quizid,
+                'userid' => $quiz_time->userid
+            ]);
+
+            $attempts_count = $DB->count_records('quiz_attempts', [
+                'quiz' => $quizid,
+                'userid' => $quiz_time->userid,
+                'state' => 'finished' // Count only finished attempts
+            ]);
+
+            $attempts = $DB->get_records('quiz_attempts', [
+                'quiz' => $quizid,
+                'userid' => $quiz_time->userid,
+                'state' => 'finished' // Учитываем только завершенные попытки
+            ]);
+
+            // Count avg score for all attempts
+            $sum_grades = 0;
+            foreach ($attempts as $attempt) {
+                $sum_grades += $attempt->sumgrades;
+            }
+            $avg_grade = $attempts_count > 0 ? $sum_grades / $attempts_count : 0;
+
+            // Рассчитываем время выполнения теста для текущего пользователя
+            $time_diff = $quiz_time->timefinish - $quiz_time->timestart;
+
+            // Рассчитываем разницу между средним временем выполнения и временем выполнения текущего пользователя
+            $time_diff_avg = $time_diff - $avg_time_solve;
+
+            $date_format = 'Y-m-d H:i:s';
             $data = [
                 html_writer::link(new moodle_url('/grade/report/ppreport/index.php', [
                     'id' => $COURSE->id, 
@@ -248,7 +314,11 @@ class grade_report_ppreport extends grade_report {
                 ]), $quiz_time->firstname . ' ' . $quiz_time->lastname), 
                 gmdate($date_format, $quiz_time->timestart), 
                 gmdate($date_format, $quiz_time->timefinish),
-                format_period($quiz_time->timefinish - $quiz_time->timestart)
+                format_period($quiz_time->timefinish - $quiz_time->timestart),
+                $grade !== false ? format_float($grade, 2) : 'N/A',
+                $attempts_count,
+                format_float($avg_grade, 2),
+                format_period($time_diff_avg)
             ];
             
             $this->table->add_data($data);
@@ -267,16 +337,218 @@ class grade_report_ppreport extends grade_report {
         return array_values($r)[0]->avg_diff;
     }
 
-    public function print_quiz_page($quizid) {
+    public function print_quiz_page($quizid, $groupid = 0) {
         global $DB, $OUTPUT, $COURSE;
-        $sql = "SELECT count(userid) AS studentsCount, avg(grade) AS gradeAvg FROM {quiz_grades} qg WHERE quiz = ?";
-        $result = $DB->get_record_sql($sql, array($quizid));
         
+        // Get basic quiz info
+        $sql = "SELECT count(DISTINCT qg.userid) AS studentsCount, avg(grade) AS gradeAvg 
+                FROM {quiz_grades} qg 
+                JOIN {user} u ON u.id = qg.userid
+                WHERE quiz = ?";
+        $params = array($quizid);
+        
+        // Add group filter if specified
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+        
+        $result = $DB->get_record_sql($sql, $params);
         $result->quizname = $DB->get_record_sql("SELECT name FROM {quiz} q WHERE id = ?", array($quizid))->name;
-        $result->quizUsersTable = $this->print_table($quizid);
-        $result->solveTimeAvg = $this->print_avg_data($quizid);
-
+        
+        // Add charts
+        $result->timeChart = $this->generate_time_chart($quizid, $groupid);
+        $result->gradeChart = $this->generate_grade_chart($quizid, $groupid);
+        
+        // Add detailed table
+        $result->quizUsersTable = $this->print_table($quizid, $groupid);
+        $result->solveTimeAvg = $this->calculate_avg_time_solve($quizid);
+        
+        $result->gradeDistributionChart = $this->generate_grade_distribution_line_chart($quizid, $groupid);
+        $result->attemptsProgressChart = $this->generate_attempts_progress_pie_chart($quizid, $groupid);
+        
         echo $OUTPUT->render_from_template("gradereport_ppreport/quiz", $result);
+    }
+
+    protected function print_performance_comparison_chart() {
+        global $DB, $OUTPUT, $COURSE;
+    
+        // Получаем средние оценки по группам
+        $sql = "SELECT g.id AS group_id, g.name AS group_name, AVG(qg.grade) AS avg_grade
+                FROM {groups} g
+                JOIN {groups_members} gm ON g.id = gm.groupid
+                JOIN {user} u ON u.id = gm.userid
+                JOIN {quiz_grades} qg ON u.id = qg.userid
+                JOIN {quiz} q ON q.id = qg.quiz
+                WHERE q.course = ?
+                GROUP BY g.id, g.name";
+    
+        $params = array($COURSE->id);
+        $group_performance = $DB->get_records_sql($sql, $params);
+    
+        // Проверяем, есть ли группы
+        if (empty($group_performance)) {
+            return '<div class="no-groups-message">Нет доступных групп для отображения успеваемости по группам.</div>';
+        }
+    
+        // Подготовка данных для графика
+        $group_names = array();
+        $avg_grades = array();
+    
+        foreach ($group_performance as $performance) {
+            $group_names[] = $performance->group_name;
+            $avg_grades[] = $performance->avg_grade;
+        }
+    
+        // Создаем столбчатую диаграмму
+        $chart = new \core\chart_bar();
+        $chart->set_title('Сравнение успеваемости по группам');
+    
+        // Устанавливаем ось Y
+        $yaxis = new \core\chart_axis('y', 'Средняя оценка', 'right');
+        $chart->set_yaxis($yaxis);
+    
+        // Устанавливаем ось X
+        $xaxis = new \core\chart_axis('x', 'Группы', 'bottom');
+        $xaxis->set_labels($group_names);
+        $chart->set_xaxis($xaxis);
+    
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Средняя оценка', $avg_grades);
+        $chart->add_series($series);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
+
+    protected function generate_attempts_progress_pie_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+    
+        // Получаем данные о попытках для каждого пользователя
+        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username,
+                ROUND(qa.sumgrades, 2) as grade
+                FROM {quiz_attempts} qa
+                JOIN {user} u ON u.id = qa.userid
+                WHERE qa.quiz = ? AND qa.state = 'finished'";
+    
+        $params = array($quizid);
+    
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+    
+        $attempts = $DB->get_records_sql($sql, $params);
+    
+        // Подготовка данных для графика
+        $data = array();
+        foreach ($attempts as $attempt) {
+            if (!isset($data[$attempt->username])) {
+                $data[$attempt->username] = 0; // Инициализируем сумму оценок для пользователя
+            }
+            $data[$attempt->username] += $attempt->grade; // Суммируем оценки для каждого пользователя
+        }
+    
+        // Подготовка данных для круговой диаграммы
+        $usernames = array();
+        $grades = array();
+    
+        foreach ($data as $username => $total_grade) {
+            $usernames[] = $username;
+            $grades[] = $total_grade;
+        }
+    
+        // Создаем круговую диаграмму
+        $chart = new \core\chart_pie();
+        $chart->set_title('Прогресс по попыткам');
+    
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Оценки пользователей', $grades);
+        $chart->add_series($series);
+        
+        // Устанавливаем метки для круговой диаграммы
+        $chart->set_labels($usernames);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
+
+    protected function generate_time_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+
+        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username, 
+                qa.timefinish - qa.timestart as solve_time
+                FROM {quiz_attempts} qa
+                JOIN {user} u ON u.id = qa.userid
+                WHERE qa.quiz = ? AND qa.state = 'finished'";
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+
+        $attempts = $DB->get_records_sql($sql, $params);
+
+        $usernames = array();
+        $times = array();
+        foreach ($attempts as $attempt) {
+            $usernames[] = $attempt->username;
+            $times[] = $attempt->solve_time;
+        }
+
+        $chart = new \core\chart_bar();
+        $chart->set_title('Время выполнения теста');
+        $series = new \core\chart_series('Затраченное время', $times);
+        $chart->add_series($series);
+        $chart->set_labels($usernames);
+
+        return $OUTPUT->render($chart);
+    }
+
+    protected function generate_grade_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+
+        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username, 
+                qg.grade
+                FROM {quiz_grades} qg
+                JOIN {user} u ON u.id = qg.userid
+                WHERE qg.quiz = ?";
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+
+        $grades = $DB->get_records_sql($sql, $params);
+
+        $usernames = array();
+        $gradeValues = array();
+        foreach ($grades as $grade) {
+            $usernames[] = $grade->username;
+            $gradeValues[] = $grade->grade;
+        }
+
+        $chart = new \core\chart_bar();
+        $chart->set_title('Оценки студентов');
+        $series = new \core\chart_series('Оценка', $gradeValues);
+        $chart->add_series($series);
+        $chart->set_labels($usernames);
+
+        return $OUTPUT->render($chart);
     }
 
     /**
@@ -294,6 +566,18 @@ class grade_report_ppreport extends grade_report {
         } else {
             echo $html;
         }
+    }
+
+    /**
+     * Fetches the list of student groups for the current course.
+     *
+     * @return array An array of groups with their IDs and names.
+     */
+    public function get_student_groups() {
+        global $DB, $COURSE;
+
+        $groups = $DB->get_records('groups', ['courseid' => $COURSE->id], 'name', 'id, name');
+        return $groups;
     }
 
     /**
@@ -460,6 +744,88 @@ class grade_report_ppreport extends grade_report {
         return ob_get_clean();
     }
 
+    public function display() {
+        global $OUTPUT;
+
+        // Отображение таблицы
+        $this->fill_table($this->quizid);
+        echo $this->table->finish_output();
+
+        // Отображение графика
+        $chart = $this->print_avg_time_chart($this->quizid);
+        $chart2 = $this->print_avg_grades_pie_chart($this->quizid);
+        $chart3 = $this->print_avg_attempts_pie_chart($this->quizid);
+        $chart4 = $this->print_performance_comparison_chart($this->quizid);
+        echo $chart . $chart2 . $chart3 . $chart4;
+    }
+
+    public function print_avg_attempts_pie_chart() {
+        global $DB, $OUTPUT, $COURSE;
+    
+        // Получаем данные о количестве попыток за тесты
+        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, COUNT(qa.id) as attempts_count 
+                FROM {quiz} q
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz
+                WHERE q.course = ?
+                GROUP BY q.id, q.name";
+        
+        $attempts_data = $DB->get_records_sql($sql, array($COURSE->id));
+    
+        // Подготовка данных для графика
+        $quiz_names = array();
+        $attempts_counts = array();
+    
+        foreach ($attempts_data as $data) {
+            $quiz_names[] = $data->quiz_name;
+            $attempts_counts[] = $data->attempts_count;
+        }
+    
+        // Создаем круговую диаграмму
+        $chart = new \core\chart_pie();
+        $chart->set_title('Среднее количество попыток по тестам');
+    
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Количество попыток', $attempts_counts);
+        $chart->add_series($series);
+        
+        // Устанавливаем метки для круговой диаграммы
+        $chart->set_labels($quiz_names);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
+
+    public function print_avg_time_chart() {
+        global $DB, $OUTPUT, $COURSE;
+    
+        // Получаем данные о среднем времени выполнения тестов
+        $sql = "SELECT q.id, q.name, AVG(qa.timefinish - qa.timestart) as avg_time 
+                FROM {quiz} q
+                JOIN {quiz_attempts} qa ON q.id = qa.quiz
+                WHERE q.course = ? AND qa.state = 'finished'
+                GROUP BY q.id, q.name";
+        $avg_times = $DB->get_records_sql($sql, array($COURSE->id));
+    
+        // Создаем массивы для данных графика
+        $quiz_names = array();
+        $avg_times_array = array();
+    
+        // Заполняем массивы данными
+        foreach ($avg_times as $avg_time) {
+            $quiz_names[] = $avg_time->name;
+            $avg_times_array[] = $avg_time->avg_time;
+        }
+    
+        // Создаем график
+        $chart = new \core\chart_line(); // Используем столбчатую диаграмму
+        $series = new \core\chart_series('Среднее время выполнения', $avg_times_array);
+        $chart->add_series($series);
+        $chart->set_labels($quiz_names);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
+
     private function fill_user_quiz_grades_table(&$table, $userid) {
         global $DB, $COURSE, $OUTPUT;
         //TODO: extract to func
@@ -474,7 +840,7 @@ class grade_report_ppreport extends grade_report {
         }
 
         foreach ($userQuizTimeData as $userQuizTime) {
-            $date_format = 'Y-m-d\TH:i:s\Z';
+            $date_format = 'Y-m-d H:i:s';
             $data = [
                 $userQuizTime->name,
                 gmdate($date_format, $userQuizTime->timestart), 
@@ -487,15 +853,44 @@ class grade_report_ppreport extends grade_report {
         }
     }
 
-    private function array_search_func(array $arr, $func)
-    {
-        foreach ($arr as $key => $v)
-            if ($func($v))
-                return $v;
 
-        return false;
+    public function print_avg_grades_pie_chart() {
+        global $DB, $OUTPUT, $COURSE;
+    
+        // Получаем средние оценки за тесты
+        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, AVG(qg.grade) AS avg_grade
+                FROM {quiz} q
+                JOIN {quiz_grades} qg ON q.id = qg.quiz
+                WHERE q.course = ?
+                GROUP BY q.id, q.name";
+        
+        $avg_grades = $DB->get_records_sql($sql, array($COURSE->id));
+    
+        // Подготовка данных для графика
+        $quiz_names = array();
+        $avg_grades_array = array();
+    
+        foreach ($avg_grades as $grade) {
+            $quiz_names[] = $grade->quiz_name;
+            $avg_grades_array[] = $grade->avg_grade;
+        }
+    
+        // Создаем круговую диаграмму
+        $chart = new \core\chart_pie();
+        $chart->set_title('Средние оценки за тесты');
+    
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Средняя оценка', $avg_grades_array);
+        $chart->add_series($series);
+        
+        // Устанавливаем метки для круговой диаграммы
+        $chart->set_labels($quiz_names);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
     }
 
+    
     /**
      * Check if the user can access the report.
      *
@@ -552,6 +947,82 @@ class grade_report_ppreport extends grade_report {
         );
         $event->trigger();
     }
+
+    protected function generate_grade_distribution_line_chart($quizid, $groupid = 0) {
+        global $DB, $OUTPUT;
+    
+        $sql = "SELECT 
+                CASE 
+                    WHEN grade >= 90 THEN '90-100'
+                    WHEN grade >= 80 THEN '80-89'
+                    WHEN grade >= 70 THEN '70-79'
+                    WHEN grade >= 60 THEN '60-69'
+                    ELSE '0-59'
+                END as grade_range,
+                COUNT(*) as count
+                FROM {quiz_grades} qg
+                JOIN {user} u ON u.id = qg.userid
+                WHERE quiz = ?";
+    
+        $params = array($quizid);
+    
+        if ($groupid) {
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {groups_members} gm 
+                WHERE gm.userid = u.id AND gm.groupid = ?
+            )";
+            $params[] = $groupid;
+        }
+    
+        $sql .= " GROUP BY grade_range ORDER BY grade_range DESC";
+    
+        $distribution = $DB->get_records_sql($sql, $params);
+    
+        $ranges = array();
+        $counts = array();
+        foreach ($distribution as $range) {
+            $ranges[] = $range->grade_range;
+            $counts[] = $range->count;
+        }
+    
+        // Создаем линейный график
+        $chart = new \core\chart_line();
+        $chart->set_title('Распределение оценок');
+    
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Количество студентов', $counts);
+        $chart->add_series($series);
+        
+        // Устанавливаем метки для оси X
+        $chart->set_labels($ranges);
+    
+        // Устанавливаем ось Y
+        $yaxis = new \core\chart_axis('y', 'Количество студентов', 'right');
+        $chart->set_yaxis($yaxis);
+    
+        // Устанавливаем ось X
+        $xaxis = new \core\chart_axis('x', 'Диапазоны оценок', 'bottom');
+        $chart->set_xaxis($xaxis);
+    
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
+    }
+
+    /**
+     * Ищет элемент в массиве по заданному условию.
+     *
+     * @param array $array Массив для поиска.
+     * @param callable $callback Функция обратного вызова для проверки условия.
+     * @return mixed Найденный элемент или null, если не найден.
+     */
+    private function array_search_func(array $array, callable $callback) {
+        foreach ($array as $item) {
+            if ($callback($item)) {
+                return $item;
+            }
+        }
+        return null; // Возвращаем null, если элемент не найден
+    }
 }
 
 function grade_report_ppreport_settings_definition(&$mform) {
@@ -605,7 +1076,7 @@ function gradereport_ppreport_myprofile_navigation(core_user\output\myprofile\tr
     $coursecontext = context_course::instance($course->id);
     if (grade_report_ppreport::check_access($systemcontext, $coursecontext, $usercontext, $course, $user->id)) {
         $url = new moodle_url('/grade/report/ppreport/index.php', array('userid' => $user->id, 'id' => $course->id));
-        $node = new core_user\output\myprofile\node('reports', 'gradesppreport', get_string('gradesppreport', 'gradereport_ppreport'),
+        $node = new core_user\output\myprofile\node('reports', 'gradesppreport', get_string('pluginname', 'gradereport_ppreport'),
                 null, $url);
         $tree->add_node($node);
     }
