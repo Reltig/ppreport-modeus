@@ -216,7 +216,7 @@ class grade_report_ppreport extends grade_report {
 
         $chart = $this->print_avg_time_chart();
         $chart2 = $this->print_avg_grades_pie_chart();
-        $chart3 = $this->print_avg_attempts_pie_chart();
+        $chart3 = $this->print_avg_attempts_bar_chart();
         $chart4 = $this->print_performance_comparison_chart();
 
         return $table_html . $chart . $chart2 . $chart3 . $chart4;
@@ -363,11 +363,17 @@ class grade_report_ppreport extends grade_report {
         $result->timeChart = $this->generate_time_chart($quizid, $groupid);
         $result->gradeChart = $this->generate_grade_chart($quizid, $groupid);
         
-        // Add detailed table
-        $result->quizUsersTable = $this->print_table($quizid, $groupid);
+        // Создаем и заполняем таблицу
+        $this->setup_table(); // Устанавливаем структуру таблицы
+        $this->fill_table($quizid); // Заполняем таблицу данными
+        
+        // Получаем HTML таблицы
+        ob_start();
+        $this->table->print_html();
+        $result->quizUsersTable = ob_get_clean();
+        
         $result->solveTimeAvg = $this->calculate_avg_time_solve($quizid);
         
-        $result->gradeDistributionChart = $this->generate_grade_distribution_line_chart($quizid, $groupid);
         $result->attemptsProgressChart = $this->generate_attempts_progress_pie_chart($quizid, $groupid);
         
         echo $OUTPUT->render_from_template("gradereport_ppreport/quiz", $result);
@@ -375,51 +381,66 @@ class grade_report_ppreport extends grade_report {
 
     protected function print_performance_comparison_chart() {
         global $DB, $OUTPUT, $COURSE;
-    
-        // Получаем средние оценки по группам
-        $sql = "SELECT g.id AS group_id, g.name AS group_name, AVG(qg.grade) AS avg_grade
+
+        // Получаем средние оценки по группам для текущего курса
+        $sql = "WITH StudentAverages AS (
+                    SELECT g.id AS group_id,
+                           u.id AS user_id,
+                           ROUND(AVG(qg.grade), 2) as student_avg
+                    FROM {groups} g
+                    JOIN {groups_members} gm ON g.id = gm.groupid
+                    JOIN {user} u ON u.id = gm.userid
+                    JOIN {quiz_grades} qg ON u.id = qg.userid
+                    JOIN {quiz} q ON q.id = qg.quiz
+                    WHERE q.course = ?
+                    GROUP BY g.id, u.id
+                )
+                SELECT g.id AS group_id,
+                       g.name AS group_name,
+                       COUNT(DISTINCT gm.userid) AS student_count,
+                       ROUND(AVG(sa.student_avg), 2) AS avg_grade
                 FROM {groups} g
                 JOIN {groups_members} gm ON g.id = gm.groupid
-                JOIN {user} u ON u.id = gm.userid
-                JOIN {quiz_grades} qg ON u.id = qg.userid
-                JOIN {quiz} q ON q.id = qg.quiz
-                WHERE q.course = ?
+                JOIN StudentAverages sa ON sa.group_id = g.id
+                WHERE g.courseid = ?
                 GROUP BY g.id, g.name";
-    
-        $params = array($COURSE->id);
+
+        $params = array($COURSE->id, $COURSE->id);
         $group_performance = $DB->get_records_sql($sql, $params);
-    
+
         // Проверяем, есть ли группы
         if (empty($group_performance)) {
             return '<div class="no-groups-message">Нет доступных групп для отображения успеваемости по группам.</div>';
         }
-    
+
         // Подготовка данных для графика
         $group_names = array();
         $avg_grades = array();
-    
+        
         foreach ($group_performance as $performance) {
-            $group_names[] = $performance->group_name;
+            // Форматируем название группы с добавлением информации о количестве студентов
+            $group_names[] = $performance->group_name . ' (' . $performance->student_count . ' студ.)';
             $avg_grades[] = $performance->avg_grade;
         }
-    
+
         // Создаем столбчатую диаграмму
         $chart = new \core\chart_bar();
-        $chart->set_title('Сравнение успеваемости по группам');
-    
-        // Устанавливаем ось Y
-        $yaxis = new \core\chart_axis('y', 'Средняя оценка', 'right');
-        $chart->set_yaxis($yaxis);
-    
-        // Устанавливаем ось X
-        $xaxis = new \core\chart_axis('x', 'Группы', 'bottom');
-        $xaxis->set_labels($group_names);
-        $chart->set_xaxis($xaxis);
-    
+        $chart->set_title('Средняя успеваемость по группам');
+
         // Добавляем серию данных в график
         $series = new \core\chart_series('Средняя оценка', $avg_grades);
         $chart->add_series($series);
-    
+        
+        // Устанавливаем метки для оси X
+        $chart->set_labels($group_names);
+
+        // Настраиваем оси
+        $yaxis = new \core\chart_axis('y', 'Средняя оценка', 'left');
+        $chart->set_yaxis($yaxis);
+        
+        $xaxis = new \core\chart_axis('x', 'Группы', 'bottom');
+        $chart->set_xaxis($xaxis);
+
         // Возвращаем HTML-код графика
         return $OUTPUT->render($chart);
     }
@@ -427,53 +448,58 @@ class grade_report_ppreport extends grade_report {
     protected function generate_attempts_progress_pie_chart($quizid, $groupid = 0) {
         global $DB, $OUTPUT;
     
-        // Получаем данные о попытках для каждого пользователя
-        $sql = "SELECT u.id, CONCAT(u.firstname, ' ', u.lastname) as username,
-                ROUND(qa.sumgrades, 2) as grade
-                FROM {quiz_attempts} qa
-                JOIN {user} u ON u.id = qa.userid
-                WHERE qa.quiz = ? AND qa.state = 'finished'";
-    
-        $params = array($quizid);
-    
+        // Получаем среднее количество попыток для каждого теста
+        $sql = "SELECT q.id, q.name as quiz_name, 
+                ROUND(CAST(COUNT(qa.id) AS FLOAT) / 
+                    NULLIF(COUNT(DISTINCT qa.userid), 0), 2) as avg_attempts
+                FROM {quiz} q
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz AND qa.state = 'finished'
+                LEFT JOIN {user} u ON u.id = qa.userid";
+
         if ($groupid) {
-            $sql .= " AND EXISTS (
-                SELECT 1 FROM {groups_members} gm 
-                WHERE gm.userid = u.id AND gm.groupid = ?
-            )";
+            $sql .= " LEFT JOIN {groups_members} gm ON gm.userid = u.id";
+        }
+
+        $sql .= " WHERE q.course = (SELECT course FROM {quiz} WHERE id = ?)";
+        
+        $params = array($quizid);
+
+        if ($groupid) {
+            $sql .= " AND (gm.groupid = ? OR qa.id IS NULL)";
             $params[] = $groupid;
         }
+
+        $sql .= " GROUP BY q.id, q.name
+                  ORDER BY q.name";
     
         $attempts = $DB->get_records_sql($sql, $params);
     
-        // Подготовка данных для графика
-        $data = array();
+        // Подготовка данных для столбчатой диаграммы
+        $quiz_names = array();
+        $avg_attempts = array();
+    
         foreach ($attempts as $attempt) {
-            if (!isset($data[$attempt->username])) {
-                $data[$attempt->username] = 0; // Инициализируем сумму оценок для пользователя
-            }
-            $data[$attempt->username] += $attempt->grade; // Суммируем оценки для каждого пользователя
+            $quiz_names[] = $attempt->quiz_name;
+            $avg_attempts[] = (float)$attempt->avg_attempts;
         }
     
-        // Подготовка данных для круговой диаграммы
-        $usernames = array();
-        $grades = array();
-    
-        foreach ($data as $username => $total_grade) {
-            $usernames[] = $username;
-            $grades[] = $total_grade;
-        }
-    
-        // Создаем круговую диаграмму
-        $chart = new \core\chart_pie();
-        $chart->set_title('Прогресс по попыткам');
+        // Создаем столбчатую диаграмму
+        $chart = new \core\chart_bar();
+        $chart->set_title('Среднее количество попыток по тестам');
     
         // Добавляем серию данных в график
-        $series = new \core\chart_series('Оценки пользователей', $grades);
+        $series = new \core\chart_series('Среднее количество попыток', $avg_attempts);
         $chart->add_series($series);
         
-        // Устанавливаем метки для круговой диаграммы
-        $chart->set_labels($usernames);
+        // Устанавливаем метки для оси X
+        $chart->set_labels($quiz_names);
+        
+        // Настраиваем оси
+        $yaxis = new \core\chart_axis('y', 'Среднее количество попыток', 'left');
+        $chart->set_yaxis($yaxis);
+        
+        $xaxis = new \core\chart_axis('x', 'Тесты', 'bottom');
+        $chart->set_xaxis($xaxis);
     
         // Возвращаем HTML-код графика
         return $OUTPUT->render($chart);
@@ -643,7 +669,7 @@ class grade_report_ppreport extends grade_report {
         $result->sumQuizGrade = $sumQuizGrade;
         $result->gradeAvg = $gradeAvg;
     }
-
+    
     private function create_user_quiz_grades_chart($userid) {
         global $DB, $COURSE, $OUTPUT;
 
@@ -671,7 +697,7 @@ class grade_report_ppreport extends grade_report {
         }
         // echo json_encode($userGrades, JSON_PRETTY_PRINT);
         $chart = new \core\chart_line();
-        $chart->add_series(new core\chart_series('User quiz grades', array_merge($userGrades)));
+        $chart->add_series(new core\chart_series('Оценки пользователя', array_merge($userGrades)));
         $chart->set_labels($quizLabels);
 
         return $OUTPUT->render($chart);
@@ -680,36 +706,44 @@ class grade_report_ppreport extends grade_report {
     private function create_solve_time_chart($userid) {
         global $DB, $COURSE, $OUTPUT;
 
-        $sql = "SELECT q.id, q.name, qg.grade, qa.quiz, qa.timefinish - qa.timestart as timediff, avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
-                INNER JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
-                INNER JOIN {quiz} q ON q.id = qa.quiz
-                WHERE q.course = ? AND qg.userid = ? 
+        // Получаем среднее время выполнения для каждого теста
+        $sql = "SELECT q.id, q.name, 
+                AVG(qa.timefinish - qa.timestart) as avg_time
+                FROM {quiz} q
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz AND qa.state = 'finished'
+                WHERE q.course = ?
+                GROUP BY q.id, q.name
                 ORDER BY q.timecreated ASC";
-        $userQuizTimeData = $DB->get_records_sql($sql, array($COURSE->id, $userid));
+        $avgQuizData = $DB->get_records_sql($sql, array($COURSE->id));
 
-        //TODO: extract to function
-        $sql = "SELECT q.id, q.name FROM {quiz} q
+        // Получаем время выполнения конкретного пользователя
+        $sql = "SELECT q.id, q.name, 
+                (qa.timefinish - qa.timestart) as user_time
+                FROM {quiz} q
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz AND qa.userid = ? AND qa.state = 'finished'
                 WHERE q.course = ?
                 ORDER BY q.timecreated ASC";
-        $allQuizData = $DB->get_records_sql($sql, array($COURSE->id,));
-        $quizLabels = array_map(fn ($a) => $a->name, array_values($allQuizData));
-        $userQuizIds = array_map(fn ($a) => $a->id, array_values($userQuizTimeData));
+        $userQuizData = $DB->get_records_sql($sql, array($userid, $COURSE->id));
 
+        // Подготовка данных для графика
+        $quizLabels = [];
         $userTimes = [];
-        $userTimesAvg = [];
-        foreach ($allQuizData as $quizData) {
-            if (!in_array($quizData->id, $userQuizIds)){
-                $userTimes[]=0;
-                $userTimesAvg[]=0;
-                continue;
-            }
-            $userTimes[] = $this->array_search_func($userQuizTimeData, fn ($d) => $d->id == $quizData->id)->timediff;
-            $userTimesAvg[] = $this->array_search_func($userQuizTimeData, fn ($d) => $d->id == $quizData->id)->avg_diff;
+        $avgTimes = [];
+
+        foreach ($avgQuizData as $quizData) {
+            $quizLabels[] = $quizData->name;
+            $avgTimes[] = $quizData->avg_time ? (float)$quizData->avg_time : 0;
+            
+            // Получаем время пользователя для этого теста
+            $userTime = isset($userQuizData[$quizData->id]) ? 
+                (float)$userQuizData[$quizData->id]->user_time : 0;
+            $userTimes[] = $userTime;
         }
 
+        // Создаем график
         $chart = new \core\chart_line();
-        $chart->add_series(new core\chart_series('User quiz solve time', array_merge($userTimes)));
-        $chart->add_series(new core\chart_series('Quiz avg solve time', array_merge($userTimesAvg)));
+        $chart->add_series(new \core\chart_series('Время выполнения теста студентом', $userTimes));
+        $chart->add_series(new \core\chart_series('Среднее время выполнения теста', $avgTimes));
         $chart->set_labels($quizLabels);
 
         return $OUTPUT->render($chart);
@@ -754,46 +788,11 @@ class grade_report_ppreport extends grade_report {
         // Отображение графика
         $chart = $this->print_avg_time_chart($this->quizid);
         $chart2 = $this->print_avg_grades_pie_chart($this->quizid);
-        $chart3 = $this->print_avg_attempts_pie_chart($this->quizid);
+        $chart3 = $this->print_avg_attempts_bar_chart($this->quizid);
         $chart4 = $this->print_performance_comparison_chart($this->quizid);
         echo $chart . $chart2 . $chart3 . $chart4;
     }
 
-    public function print_avg_attempts_pie_chart() {
-        global $DB, $OUTPUT, $COURSE;
-    
-        // Получаем данные о количестве попыток за тесты
-        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, COUNT(qa.id) as attempts_count 
-                FROM {quiz} q
-                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz
-                WHERE q.course = ?
-                GROUP BY q.id, q.name";
-        
-        $attempts_data = $DB->get_records_sql($sql, array($COURSE->id));
-    
-        // Подготовка данных для графика
-        $quiz_names = array();
-        $attempts_counts = array();
-    
-        foreach ($attempts_data as $data) {
-            $quiz_names[] = $data->quiz_name;
-            $attempts_counts[] = $data->attempts_count;
-        }
-    
-        // Создаем круговую диаграмму
-        $chart = new \core\chart_pie();
-        $chart->set_title('Среднее количество попыток по тестам');
-    
-        // Добавляем серию данных в график
-        $series = new \core\chart_series('Количество попыток', $attempts_counts);
-        $chart->add_series($series);
-        
-        // Устанавливаем метки для круговой диаграммы
-        $chart->set_labels($quiz_names);
-    
-        // Возвращаем HTML-код графика
-        return $OUTPUT->render($chart);
-    }
 
     public function print_avg_time_chart() {
         global $DB, $OUTPUT, $COURSE;
@@ -828,14 +827,18 @@ class grade_report_ppreport extends grade_report {
 
     private function fill_user_quiz_grades_table(&$table, $userid) {
         global $DB, $COURSE, $OUTPUT;
-        //TODO: extract to func
-        $sql = "SELECT q.id, q.name, qg.grade, qa.quiz, qa.timefinish - qa.timestart as timediff, avg(timefinish - timestart) as avg_diff FROM {quiz_attempts} qa
-                JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid AND qg.timemodified = qa.timefinish
+
+        // Измененный SQL-запрос для получения всех завершенных тестов пользователя
+        $sql = "SELECT q.id, q.name, qg.grade, qa.timestart, qa.timefinish, qa.timefinish - qa.timestart as timediff 
+                FROM {quiz_attempts} qa
+                JOIN {quiz_grades} qg ON qg.quiz = qa.quiz AND qg.userid = qa.userid
                 JOIN {quiz} q ON q.id = qa.quiz
-                WHERE q.course = ? AND qg.userid = ? 
+                WHERE q.course = ? AND qa.state = 'finished' AND qg.userid = ? 
                 ORDER BY q.timecreated ASC";
-        $userQuizTimeData = array_values($DB->get_records_sql($sql, array($COURSE->id, $userid)));
-        if ($userQuizTimeData[0]->id == null) {
+        $userQuizTimeData = $DB->get_records_sql($sql, array($COURSE->id, $userid));
+
+        // Проверка на наличие данных
+        if (empty($userQuizTimeData)) {
             return;
         }
 
@@ -948,65 +951,6 @@ class grade_report_ppreport extends grade_report {
         $event->trigger();
     }
 
-    protected function generate_grade_distribution_line_chart($quizid, $groupid = 0) {
-        global $DB, $OUTPUT;
-    
-        $sql = "SELECT 
-                CASE 
-                    WHEN grade >= 90 THEN '90-100'
-                    WHEN grade >= 80 THEN '80-89'
-                    WHEN grade >= 70 THEN '70-79'
-                    WHEN grade >= 60 THEN '60-69'
-                    ELSE '0-59'
-                END as grade_range,
-                COUNT(*) as count
-                FROM {quiz_grades} qg
-                JOIN {user} u ON u.id = qg.userid
-                WHERE quiz = ?";
-    
-        $params = array($quizid);
-    
-        if ($groupid) {
-            $sql .= " AND EXISTS (
-                SELECT 1 FROM {groups_members} gm 
-                WHERE gm.userid = u.id AND gm.groupid = ?
-            )";
-            $params[] = $groupid;
-        }
-    
-        $sql .= " GROUP BY grade_range ORDER BY grade_range DESC";
-    
-        $distribution = $DB->get_records_sql($sql, $params);
-    
-        $ranges = array();
-        $counts = array();
-        foreach ($distribution as $range) {
-            $ranges[] = $range->grade_range;
-            $counts[] = $range->count;
-        }
-    
-        // Создаем линейный график
-        $chart = new \core\chart_line();
-        $chart->set_title('Распределение оценок');
-    
-        // Добавляем серию данных в график
-        $series = new \core\chart_series('Количество студентов', $counts);
-        $chart->add_series($series);
-        
-        // Устанавливаем метки для оси X
-        $chart->set_labels($ranges);
-    
-        // Устанавливаем ось Y
-        $yaxis = new \core\chart_axis('y', 'Количество студентов', 'right');
-        $chart->set_yaxis($yaxis);
-    
-        // Устанавливаем ось X
-        $xaxis = new \core\chart_axis('x', 'Диапазоны оценок', 'bottom');
-        $chart->set_xaxis($xaxis);
-    
-        // Возвращаем HTML-код графика
-        return $OUTPUT->render($chart);
-    }
 
     /**
      * Ищет элемент в массиве по заданному условию.
@@ -1022,6 +966,50 @@ class grade_report_ppreport extends grade_report {
             }
         }
         return null; // Возвращаем null, если элемент не найден
+    }
+
+    public function print_avg_attempts_bar_chart() {
+        global $DB, $OUTPUT, $COURSE;
+
+        // Получаем данные о среднем количестве попыток за тесты
+        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, 
+                       COUNT(qa.id) / COUNT(DISTINCT qa.userid) as avg_attempts
+                FROM {quiz} q
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz AND qa.state = 'finished'
+                WHERE q.course = ?
+                GROUP BY q.id, q.name";
+
+        $attempts_data = $DB->get_records_sql($sql, array($COURSE->id));
+
+        // Подготовка данных для графика
+        $quiz_names = array();
+        $avg_attempts = array();
+
+        foreach ($attempts_data as $data) {
+            $quiz_names[] = $data->quiz_name;
+            $avg_attempts[] = $data->avg_attempts;
+        }
+
+        // Создаем столбчатую диаграмму
+        $chart = new \core\chart_bar();
+        $chart->set_title('Среднее количество попыток по тестам');
+
+        // Добавляем серию данных в график
+        $series = new \core\chart_series('Среднее количество попыток', $avg_attempts);
+        $chart->add_series($series);
+        
+        // Устанавливаем метки для оси X
+        $chart->set_labels($quiz_names);
+
+        // Настраиваем оси
+        $yaxis = new \core\chart_axis('y', 'Среднее количество попыток', 'left');
+        $chart->set_yaxis($yaxis);
+        
+        $xaxis = new \core\chart_axis('x', 'Тесты', 'bottom');
+        $chart->set_xaxis($xaxis);
+
+        // Возвращаем HTML-код графика
+        return $OUTPUT->render($chart);
     }
 }
 
