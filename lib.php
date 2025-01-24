@@ -228,16 +228,27 @@ class grade_report_ppreport extends grade_report {
      * @param bool $studentcoursesonly Only show courses that the user is a student of.
      * @return array of course grades information
      */
-    public function setup_courses_data($quizid, $studentcoursesonly) {
+    public function setup_courses_data($quizid, $studentcoursesonly, $groupid = 0) {
         global $USER, $DB;
 
-        $sql = "SELECT qa.timestart, qa.timefinish, u.firstname, u.lastname, u.id as userid FROM {quiz_grades} qg
+        $sql = "SELECT qa.timestart, qa.timefinish, u.firstname, u.lastname, u.id as userid 
+                FROM {quiz_grades} qg
                 LEFT JOIN {quiz_attempts} qa ON qa.quiz = qg.quiz AND qa.timefinish = qg.timemodified
-                LEFT JOIN {user} u ON qa.userid = u.id
-                WHERE state = 'finished' AND qg.quiz = ?
-                ORDER BY timefinish - timestart";
+                LEFT JOIN {user} u ON qa.userid = u.id";
+        
+        $params = array($quizid);
 
-        return $DB->get_records_sql($sql, array($quizid));
+        if ($groupid) {
+            $sql .= " JOIN {groups_members} gm ON gm.userid = u.id 
+                      WHERE gm.groupid = ? AND state = 'finished' AND qg.quiz = ?";
+            $params = array($groupid, $quizid);
+        } else {
+            $sql .= " WHERE state = 'finished' AND qg.quiz = ?";
+        }
+
+        $sql .= " ORDER BY timefinish - timestart";
+
+        return $DB->get_records_sql($sql, $params);
     }
 
 
@@ -251,12 +262,12 @@ class grade_report_ppreport extends grade_report {
         global $DB;
 
         // Получаем среднее время выполнения теста
-        $sql = "SELECT AVG(timefinish - timestart) as avg_time 
+        $sql = "SELECT ROUND(AVG(timefinish - timestart)) as avg_time 
                 FROM {quiz_attempts} 
                 WHERE quiz = :quizid AND state = 'finished'";
         $avg_time = $DB->get_field_sql($sql, ['quizid' => $quizid]);
 
-        return $avg_time ? (float)$avg_time : 0;
+        return $avg_time ? (int)$avg_time : 0;
     }
 
     /**
@@ -265,13 +276,16 @@ class grade_report_ppreport extends grade_report {
      * @param bool $activitylink If this report link to the activity report or the user report.
      * @param bool $studentcoursesonly Only show courses that the user is a student of.
      */
-    public function fill_table($quizid, $activitylink = false, $studentcoursesonly = false) {
+    public function fill_table($quizid, $activitylink = false, $studentcoursesonly = false, $groupid = 0) {
         global $CFG, $DB, $OUTPUT, $USER, $COURSE;
 
-        $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly);
+        // Получаем данные о попытках теста с учетом группы
+        $quiz_times = $this->setup_courses_data($quizid, $studentcoursesonly, $groupid);
 
         // Вычисляем среднее время выполнения теста (avg_time_solve)
         $avg_time_solve = $this->print_avg_data($quizid);
+
+        $avg_time_solve = $this->calculate_avg_time_solve($quizid);
 
         foreach ($quiz_times as $quiz_time) {
 
@@ -340,20 +354,19 @@ class grade_report_ppreport extends grade_report {
     public function print_quiz_page($quizid, $groupid = 0) {
         global $DB, $OUTPUT, $COURSE;
         
-        // Get basic quiz info
+        // Get basic quiz info with group filter
         $sql = "SELECT count(DISTINCT qg.userid) AS studentsCount, avg(grade) AS gradeAvg 
                 FROM {quiz_grades} qg 
-                JOIN {user} u ON u.id = qg.userid
-                WHERE quiz = ?";
+                JOIN {user} u ON u.id = qg.userid";
+        
         $params = array($quizid);
         
-        // Add group filter if specified
         if ($groupid) {
-            $sql .= " AND EXISTS (
-                SELECT 1 FROM {groups_members} gm 
-                WHERE gm.userid = u.id AND gm.groupid = ?
-            )";
-            $params[] = $groupid;
+            $sql .= " JOIN {groups_members} gm ON gm.userid = u.id 
+                      WHERE quiz = ? AND gm.groupid = ?";
+            $params = array($quizid, $groupid);
+        } else {
+            $sql .= " WHERE quiz = ?";
         }
         
         $result = $DB->get_record_sql($sql, $params);
@@ -365,7 +378,7 @@ class grade_report_ppreport extends grade_report {
         
         // Создаем и заполняем таблицу
         $this->setup_table(); // Устанавливаем структуру таблицы
-        $this->fill_table($quizid); // Заполняем таблицу данными
+        $this->fill_table($quizid, false, false, $groupid); // Заполняем таблицу данными с учетом группы
         
         // Получаем HTML таблицы
         ob_start();
@@ -970,44 +983,43 @@ class grade_report_ppreport extends grade_report {
 
     public function print_avg_attempts_bar_chart() {
         global $DB, $OUTPUT, $COURSE;
-
-        // Получаем данные о среднем количестве попыток за тесты
-        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, 
-                       COUNT(qa.id) / COUNT(DISTINCT qa.userid) as avg_attempts
+    
+        // Получаем данные о количестве попыток за тесты
+        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, COUNT(qa.id) as attempts_count 
                 FROM {quiz} q
-                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz AND qa.state = 'finished'
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz
                 WHERE q.course = ?
                 GROUP BY q.id, q.name";
-
+        
         $attempts_data = $DB->get_records_sql($sql, array($COURSE->id));
-
+    
         // Подготовка данных для графика
         $quiz_names = array();
-        $avg_attempts = array();
-
+        $attempts_counts = array();
+    
         foreach ($attempts_data as $data) {
             $quiz_names[] = $data->quiz_name;
-            $avg_attempts[] = $data->avg_attempts;
+            $attempts_counts[] = $data->attempts_count;
         }
-
+    
         // Создаем столбчатую диаграмму
         $chart = new \core\chart_bar();
         $chart->set_title('Среднее количество попыток по тестам');
-
+    
         // Добавляем серию данных в график
-        $series = new \core\chart_series('Среднее количество попыток', $avg_attempts);
+        $series = new \core\chart_series('Среднее количество попыток', $attempts_counts);
         $chart->add_series($series);
         
         // Устанавливаем метки для оси X
         $chart->set_labels($quiz_names);
-
+    
         // Настраиваем оси
-        $yaxis = new \core\chart_axis('y', 'Среднее количество попыток', 'left');
+        $yaxis = new \core\chart_axis('y', 'Количество попыток', 'left');
         $chart->set_yaxis($yaxis);
         
         $xaxis = new \core\chart_axis('x', 'Тесты', 'bottom');
         $chart->set_xaxis($xaxis);
-
+    
         // Возвращаем HTML-код графика
         return $OUTPUT->render($chart);
     }
