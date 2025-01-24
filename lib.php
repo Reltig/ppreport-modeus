@@ -985,12 +985,19 @@ class grade_report_ppreport extends grade_report {
         global $DB, $OUTPUT, $COURSE;
     
         // Получаем данные о количестве попыток за тесты
-        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, COUNT(qa.id) as attempts_count 
+        $sql = "SELECT q.id AS quiz_id, q.name AS quiz_name, 
+                COUNT(qa.id) as total_attempts,
+                COUNT(DISTINCT qa.userid) as unique_users,
+                CASE 
+                    WHEN COUNT(DISTINCT qa.userid) = 0 THEN 0
+                    ELSE ROUND(CAST(COUNT(qa.id) AS FLOAT) / COUNT(DISTINCT qa.userid), 2)
+                END as avg_attempts
                 FROM {quiz} q
-                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz
+                LEFT JOIN {quiz_attempts} qa ON q.id = qa.quiz AND qa.state = 'finished'
                 WHERE q.course = ?
-                GROUP BY q.id, q.name";
-        
+                GROUP BY q.id, q.name
+                ORDER BY q.name";
+                
         $attempts_data = $DB->get_records_sql($sql, array($COURSE->id));
     
         // Подготовка данных для графика
@@ -999,7 +1006,7 @@ class grade_report_ppreport extends grade_report {
     
         foreach ($attempts_data as $data) {
             $quiz_names[] = $data->quiz_name;
-            $attempts_counts[] = $data->attempts_count;
+            $attempts_counts[] = $data->avg_attempts;
         }
     
         // Создаем столбчатую диаграмму
